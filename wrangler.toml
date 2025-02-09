@@ -1,0 +1,31 @@
+name = "webhook-api"
+main = "src/index.js"
+compatibility_date = "2024-01-29"
+
+[build]
+command = "npm run build"
+watch_dir = "src"
+
+[env.production]
+name = "webhook-api-production"
+route = { pattern = "webhook.quantmarketintelligence.com", custom_domain = true }
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "oauth-prod-db"
+database_id = "ec5e69e9-6a3b-4e43-b825-c78413e6bee2"
+preview_database_id = "ec5e69e9-6a3b-4e43-b825-c78413e6bee2"
+
+[[env.production.kv_namespaces]]
+binding = "AUTH_STORAGE_PROD"
+id = "d4613ceacadf43969a1285671d549748"
+
+[env.development]
+name = "webhook-api-development"
+
+[observability.logs]
+enabled = true
+
+[miniflare]
+kv_persist = true
+d1_persist = true

@@ -1,0 +1,97 @@
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "BTC-USD-SWAP",
+  "type": "perpetual",
+  "side": "buy",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
+
+Close Perpetual Position (BTC)
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "BTC-USD-SWAP",
+  "type": "perpetual",
+  "marginMode": "cross",
+  "closePosition": true
+}'
+
+Open Perpetual Long Position (ETH)
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "ETH-USD-SWAP",
+  "type": "perpetual",
+  "side": "buy",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
+
+Close Perpetual Position (ETH)
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "ETH-USD-SWAP",
+  "type": "perpetual",
+  "marginMode": "cross",
+  "closePosition": true
+}'
+
+Buy Spot BTC
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "BTC-USDT",
+  "type": "spot",
+  "side": "buy",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
+
+Sell Spot BTC
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "BTC-USDT",
+  "type": "spot",
+  "side": "sell",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
+
+Buy Spot ETH
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "ETH-USDT",
+  "type": "spot",
+  "side": "buy",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
+
+Sell Spot ETH
+
+curl -X POST 'https://webhook.quantmarketintelligence.com/' \
+-H 'Content-Type: application/json' \
+-d '{
+  "symbol": "ETH-USDT",
+  "type": "spot",
+  "side": "sell",
+  "qty": "100%",
+  "marginMode": "cross",
+  "closePosition": false
+}'
