@@ -20,6 +20,41 @@ function getTimestamp() {
   return isoString.slice(0, -5) + 'Z';  
 }
 
+// Helper: Generate HMAC-SHA256 signature
+async function sign(timestamp, method, requestPath, body, secretKey) {
+  // Handle empty body same as Python
+  const processedBody = body === '{}' || !body ? '' : body;
+  
+  // Create message string
+  const message = `${timestamp}${method}${requestPath}${processedBody}`;
+  createLog('AUTH', `Signature components:\n    Message: ${message}`);
+  
+  // Convert message and key to Uint8Array
+  const msgData = new TextEncoder().encode(message);
+  const keyData = new TextEncoder().encode(secretKey);
+  
+  // Generate HMAC
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    msgData
+  );
+  
+  // Convert to base64
+  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  createLog('AUTH', `      Signature: ${mask(signatureBase64)}`);
+  
+  return signatureBase64;
+}
+
 // Helper: Generate common OKX request headers and signature
 async function generateOkxRequest(apiKey, secretKey, passphrase, method, path, body = '') {
   const timestamp = new Date().toISOString().split('.')[0] + 'Z';
@@ -48,43 +83,6 @@ async function generateOkxRequest(apiKey, secretKey, passphrase, method, path, b
   );
   
   return { headers, timestamp };
-}
-
-// Helper: Generate HMAC-SHA256 signature
-async function sign(timestamp, method, requestPath, body, secretKey) {
-  // Handle empty body same as Python
-  const processedBody = body === '{}' || !body ? '' : body;
-  
-  // Concatenate in exact order: timestamp + method + requestPath + body
-  const message = `${timestamp}${method}${requestPath}${processedBody}`;
-  createLog('AUTH', 'Generating signature');
-  
-  try {
-    // Convert to UTF-8 bytes like Python
-    const key = new TextEncoder().encode(secretKey);
-    const messageUint8 = new TextEncoder().encode(message);
-    
-    const cryptoKey = await crypto.subtle.importKey(
-      'raw',
-      key,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    
-    const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, messageUint8);
-    const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)));
-    
-    createLog('AUTH', `Signature components:
-      Message: ${message}
-      Signature: ${mask(signature)}`
-    );
-    
-    return signature;
-  } catch (error) {
-    createLog('AUTH', `Signature error: ${error.message}`);
-    throw error;
-  }
 }
 
 // Helper: Validate webhook payload
@@ -171,9 +169,15 @@ function parseTradingPair(symbol) {
 
 // Helper: Format trading pair based on type
 function formatTradingPair(symbol, type, marginType = 'USD') {
+  // For perpetual futures, keep the original format if it already has -SWAP
+  if (symbol.endsWith('-SWAP')) {
+    return symbol;
+  }
+
   // Remove any existing modifiers and standardize format
-  const cleanSymbol = symbol.replace('.P', '').replace('-', '');
+  const cleanSymbol = symbol.replace(/[-.P]/g, '');
   const base = cleanSymbol.slice(0, -4);
+  const quote = cleanSymbol.slice(-4);
 
   switch(type.toLowerCase()) {
     case 'perpetual':
@@ -188,7 +192,6 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
           return `${base}-USD-SWAP`;  // Default to crypto-margined
       }
     default: // spot and margin use USDT
-      const quote = cleanSymbol.slice(-4);
       return `${base}-${quote}`;
   }
 }
@@ -222,91 +225,76 @@ function calculateOrderSize(balance, percentage, side, symbol) {
 // Helper: Get maximum available size for trading
 async function getMaxAvailSize(instId, credentials, requestId) {
   try {
-    // For futures, we need to get the available balance of the underlying asset
+    // Different endpoint for perpetual futures
     if (instId.endsWith('-SWAP')) {
       createLog('TRADE', 'Getting futures max size');
-      const balance = await getAccountBalance(credentials, requestId);
-      createLog('TRADE', `Account balance: ${JSON.stringify(balance)}`);
+      const path = '/api/v5/account/max-size';
+      const queryParams = `?instId=${instId}&tdMode=cross`;
+
+      const { headers } = await generateOkxRequest(
+        credentials.apiKey,
+        credentials.secretKey,
+        credentials.passphrase,
+        'GET',
+        path + queryParams
+      );
+
+      createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+      const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
+      const data = await response.json();
       
-      const asset = instId.split('-')[0]; // BTC or ETH
-      createLog('TRADE', `Looking for ${asset} balance`);
-      
-      const assetDetails = balance.details.find(d => d.ccy === asset);
-      createLog('TRADE', `Asset details: ${JSON.stringify(assetDetails)}`);
-      
-      if (!assetDetails) {
-        throw new Error(`No balance found for ${asset}`);
+      if (data.code !== '0') {
+        throw new Error(JSON.stringify(data));
       }
 
-      // Get instrument info to convert balance to contracts
-      const instrumentInfo = await getInstrumentInfo(instId, credentials);
-      createLog('TRADE', `Instrument info: ${JSON.stringify(instrumentInfo)}`);
-      
-      const contractValue = parseFloat(instrumentInfo.ctVal); // In USD for inverse
-      const availBalance = parseFloat(assetDetails.availBal);
-      const equityUsd = parseFloat(assetDetails.eqUsd);
-      const currentPrice = equityUsd / availBalance; // Current price in USD
-      
-      // For inverse perpetual, calculate BTC needed per contract
-      const btcPerContract = contractValue / currentPrice;
-      
-      // Calculate max contracts based on available balance
-      const maxContracts = Math.floor(availBalance / btcPerContract);
-      
-      createLog('TRADE', `Available ${asset} balance: ${availBalance}`);
-      createLog('TRADE', `Contract value: ${contractValue} USD`);
-      createLog('TRADE', `Current price: ${currentPrice} USD`);
-      createLog('TRADE', `BTC per contract: ${btcPerContract}`);
-      createLog('TRADE', `Max contracts: ${maxContracts}`);
-      
-      if (maxContracts <= 0) {
-        throw new Error(`Insufficient ${asset} balance for trading`);
+      // Make sure we have valid numbers
+      const result = data.data[0];
+      if (!result.maxBuy || !result.maxSell) {
+        throw new Error('Invalid max size response: ' + JSON.stringify(result));
       }
-      
+
+      // Convert to same format as max-avail-size endpoint
       return {
-        availBuy: maxContracts.toString(),
-        availSell: maxContracts.toString(),
+        availBuy: result.maxBuy,
+        availSell: result.maxSell,
         instId
       };
     }
-    
-    // For spot/margin, use the existing logic
-    const tdMode = instId.endsWith('-SWAP') ? 'cross' : 'cash';
-    const path = '/api/v5/account/max-avail-size';
-    const queryParams = new URLSearchParams({
-      instId,
-      tdMode
-    }).toString();
 
+    // For spot trading, use max-avail-size endpoint
+    const path = '/api/v5/account/max-avail-size';
+    const queryParams = `?instId=${instId}&tdMode=cash`;
+    
     const { headers } = await generateOkxRequest(
       credentials.apiKey,
       credentials.secretKey,
       credentials.passphrase,
       'GET',
-      `${path}?${queryParams}`
+      path + queryParams
     );
 
-    createLog('API', `Making request to: ${OKX_API_URL}${path}?${queryParams}`);
-
-    const response = await fetch(`${OKX_API_URL}${path}?${queryParams}`, {
+    createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+    const response = await fetch(`https://www.okx.com${path}${queryParams}`, {
       method: 'GET',
       headers
     });
 
-    const text = await response.text();
-    createLog('API', `Response: ${text}`);
-
-    const data = JSON.parse(text);
-    if (!response.ok || data.code === '1') {
-      throw new Error(`Failed to get max size: ${text}`);
+    const data = await response.json();
+    
+    if (data.code !== '0') {
+      throw new Error(JSON.stringify(data));
     }
-
-    const maxSize = data.data[0];
-    createLog('TRADE', `Max available size: ${JSON.stringify(maxSize)}`);
-    return maxSize;
+    
+    // Make sure we have valid numbers
+    const result = data.data[0];
+    if (!result.availBuy || !result.availSell) {
+      throw new Error('Invalid max size response: ' + JSON.stringify(result));
+    }
+    
+    return result;
   } catch (error) {
     createLog('API', `Failed to get max size: ${error.message}`);
-    throw error;
+    throw new Error(`Failed to get max size: ${error.message}`);
   }
 }
 
@@ -322,10 +310,10 @@ async function getAccountBalance(credentials, requestId) {
       path
     );
 
-    createLog('API', `Making request to: ${OKX_API_URL}${path}`);
+    createLog('API', `Making request to: https://www.okx.com${path}`);
     createLog('API', `Headers: ${JSON.stringify(headers, null, 2)}`);
 
-    const response = await fetch(`${OKX_API_URL}${path}`, {
+    const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
       headers
     });
@@ -350,20 +338,16 @@ async function getInstrumentInfo(instId, credentials) {
   createLog('TRADE', `Getting instrument info for ${instId}`);
   
   const path = '/api/v5/public/instruments';
-  const queryParams = new URLSearchParams({
-    instType: instId.includes('-SWAP') ? 'SWAP' : 'SPOT',
-    instId
-  }).toString();
-
+  const queryParams = `?instType=${instId.includes('-SWAP') ? 'SWAP' : 'SPOT'}&instId=${instId}`;
+  
   try {
-    const response = await fetch(`${OKX_API_URL}${path}?${queryParams}`);
+    const response = await fetch(`https://www.okx.com${path}${queryParams}`);
     const data = await response.json();
     
     if (!response.ok || !data.data || !data.data[0]) {
-      throw new Error('Failed to get instrument info');
+      throw new Error(`Failed to get instrument info: ${JSON.stringify(data)}`);
     }
-
-    createLog('TRADE', `Instrument info: ${JSON.stringify(data.data[0])}`);
+    
     return data.data[0];
   } catch (error) {
     createLog('API', `Failed to get instrument info: ${error.message}`);
@@ -373,48 +357,41 @@ async function getInstrumentInfo(instId, credentials) {
 
 // Helper: Round size to lot size
 function roundToLotSize(size, lotSize) {
-  const multiplier = 1 / lotSize;
+  const precision = -Math.log10(lotSize);
+  const multiplier = Math.pow(10, precision);
   return Math.floor(size * multiplier) / multiplier;
 }
 
 // Helper: Get current position
 async function getCurrentPosition(instId, credentials) {
-  createLog('TRADE', `Getting current position for ${instId}`);
-  
-  const path = '/api/v5/account/positions';
-  // First get all positions
-  const { headers } = await generateOkxRequest(
-    credentials.apiKey,
-    credentials.secretKey,
-    credentials.passphrase,
-    'GET',
-    path
-  );
-
   try {
-    // Get all positions first
-    const allPositionsResponse = await fetch(`${OKX_API_URL}${path}`, {
+    const path = '/api/v5/account/positions';
+    const { headers } = await generateOkxRequest(
+      credentials.apiKey,
+      credentials.secretKey,
+      credentials.passphrase,
+      'GET',
+      path
+    );
+
+    createLog('API', `Making request to: https://www.okx.com${path}`);
+    const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
       headers
     });
 
-    const text = await allPositionsResponse.text();
-    createLog('API', `All positions response: ${text}`);
-    
-    const data = JSON.parse(text);
-    if (!data.data || data.data.length === 0) {
-      throw new Error(`Failed to get positions: ${text}`);
+    const data = await response.json();
+    if (data.code !== '0') {
+      throw new Error(`Failed to get position: ${JSON.stringify(data)}`);
     }
 
-    createLog('TRADE', `All positions: ${JSON.stringify(data.data || [], null, 2)}`);
-
-    // Now find the specific position
-    const position = data.data?.find(p => p.instId === instId);
+    // Find position for this instrument
+    const position = data.data.find(p => p.instId === instId);
     if (!position) {
-      throw new Error(`No position found for ${instId}. All positions shown in logs.`);
+      throw new Error(`No position found for ${instId}`);
     }
 
-    createLog('TRADE', `Found position: ${JSON.stringify(position)}`);
+    createLog('TRADE', `Current position: ${JSON.stringify(position)}`);
     return position;
   } catch (error) {
     createLog('API', `Failed to get position: ${error.message}`);
@@ -425,49 +402,18 @@ async function getCurrentPosition(instId, credentials) {
 // Helper: Execute a trade with OKX
 async function executeTrade(payload, credentials, brokerTag, requestId) {
   try {
-    // Validate the payload first
-    validatePayload(payload);
-
-    const { apiKey, secretKey, passphrase } = credentials;
-    const tradeTimestamp = new Date().toISOString().split('.')[0] + 'Z';
-    
-    // Base order data (common for all types)
     const data = {
-      instId: payload.symbol,
+      instId: formatTradingPair(payload.symbol, payload.type),
+      tdMode: payload.type === 'spot' ? 'cash' : (payload.marginMode || 'cross'),
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(Date.now().toString(), brokerTag)
+      clOrdId: `${brokerTag}${Date.now()}`
     };
 
-    // Set trading mode and additional parameters based on type
-    switch(payload.type.toLowerCase()) {
-      case 'spot':
-        data.tdMode = 'cash';
-        break;
-      case 'margin':
-        data.tdMode = payload.marginMode.toLowerCase();
-        break;
-      case 'perpetual':
-        data.tdMode = payload.marginMode.toLowerCase();
-        // Set position side based on margin type
-        if (payload.symbol.includes('-USD-')) {
-          // For inverse futures (BTC-USD-SWAP), use long/short
-          if (payload.closePosition) {
-            // When closing, posSide matches current position
-            const position = await getCurrentPosition(payload.symbol, credentials);
-            data.posSide = parseFloat(position.pos) > 0 ? 'long' : 'short';
-          } else {
-            // For new positions, posSide matches trade direction
-            data.posSide = payload.side.toLowerCase() === 'buy' ? 'long' : 'short';
-          }
-        } else {
-          // For USDT/USDC futures, use net
-          data.posSide = 'net';
-        }
-        break;
-      default:
-        throw new Error(`Invalid trade type: ${payload.type}`);
-    }
+    // Get instrument info for lot size
+    const instrumentInfo = await getInstrumentInfo(data.instId, credentials);
+    const lotSize = parseFloat(instrumentInfo.lotSz);
+    createLog('TRADE', `Lot size for ${data.instId}: ${lotSize}`);
 
     // Handle position closing for perpetual futures
     if (payload.type === 'perpetual' && payload.closePosition === true) {
@@ -480,75 +426,110 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
       
       // Set size to current position size
       data.sz = Math.abs(parseFloat(position.pos)).toString();
+
+      // Set posSide based on position type
+      if (payload.symbol.includes('-USD-')) {
+        // For inverse futures, use the position's posSide
+        data.posSide = position.posSide;
+      } else {
+        // For USDT/USDC futures, use net
+        data.posSide = 'net';
+      }
       
-      createLog('TRADE', `Closing position of ${data.sz} contracts with ${data.side}`);
+      createLog('TRADE', `Closing position of ${data.sz} contracts with ${data.side} and posSide ${data.posSide}`);
     } else {
       data.side = payload.side.toLowerCase();
-      let finalQty = payload.qty;
-
+      
       // Handle percentage-based quantities
       if (payload.qty.includes('%')) {
+        createLog('TRADE', `Getting max available size for ${payload.qty} trade`);
+        const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
+        createLog('TRADE', `Max size response: ${JSON.stringify(maxSize)}`);
+        
+        // For spot trades, we need to set tgtCcy first
+        if (payload.type === 'spot') {
+          // For sell orders in spot, use base currency (e.g., BTC)
+          // For buy orders in spot, use quote currency (e.g., USDT)
+          data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
+        }
+        
+        // Use availSell for sell orders, availBuy for buy orders
+        const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
+        createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`);
+        
+        if (!maxQty || maxQty === '0') {
+          throw new Error(`No available quantity for ${data.side} order`);
+        }
+
         if (payload.qty === '100%') {
-          createLog('TRADE', 'Getting max available size for 100% trade');
-          const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
-          createLog('TRADE', `Max size response: ${JSON.stringify(maxSize)}`);
-          
-          // Use availSell for sell orders, availBuy for buy orders
-          finalQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-          createLog('TRADE', `Setting final quantity to: ${finalQty}`);
+          // For 100%, use the max size directly but ensure it's rounded to lot size
+          const roundedSize = roundToLotSize(parseFloat(maxQty), lotSize);
+          data.sz = roundedSize.toString();
         } else {
-          // Handle percentage of max size
-          const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
-          const percentage = parseFloat(payload.qty) / 100;
-          // Use availSell for sell orders, availBuy for buy orders
-          const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-          finalQty = Math.floor(parseFloat(maxQty) * percentage).toString();
-          createLog('TRADE', `Calculated size from percentage: ${finalQty}`);
+          const percentage = parseFloat(payload.qty);
+          const fraction = percentage / 100;
+          const calculatedSize = parseFloat(maxQty) * fraction;
+          // Round to lot size
+          const roundedSize = roundToLotSize(calculatedSize, lotSize);
+          data.sz = roundedSize.toString();
+        }
+        
+        createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`);
+
+        if (parseFloat(data.sz) <= 0) {
+          throw new Error(`Invalid order size: ${data.sz}. Max available: ${maxQty}`);
+        }
+      } else {
+        // Direct size specification - still need to round to lot size
+        const roundedSize = roundToLotSize(parseFloat(payload.qty), lotSize);
+        data.sz = roundedSize.toString();
+        
+        // For spot trades with direct size
+        if (payload.type === 'spot') {
+          data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
         }
       }
 
-      // For futures, finalQty is already in contracts
-      // For spot/margin, we need to handle tgtCcy
-      data.sz = finalQty;
-      createLog('TRADE', `Final sz value: ${data.sz}`);
-
-      if (payload.type === 'spot' || payload.type === 'margin') {
-        data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
+      // For perpetual swaps, set posSide based on margin type
+      if (payload.type === 'perpetual') {
+        if (payload.symbol.includes('-USD-')) {
+          // For inverse futures (BTC-USD-SWAP), use long/short
+          data.posSide = data.side === 'buy' ? 'long' : 'short';
+        } else {
+          // For USDT/USDC futures, use net
+          data.posSide = 'net';
+        }
       }
     }
 
-    createLog('TRADE', `Order details: ${JSON.stringify(data)}`);
+    createLog('TRADE', `Executing ${data.side} order for ${data.instId}`);
+    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Data: ${JSON.stringify(data)}`);
 
     const path = '/api/v5/trade/order';
-    const body = JSON.stringify(data);  
-    const { headers } = await generateOkxRequest(apiKey, secretKey, passphrase, 'POST', path, body);
-    
-    createLog('API', `Trade request:
-      Path: ${path}
-      Data: ${body}`
+    const body = JSON.stringify(data);
+    const { headers } = await generateOkxRequest(
+      credentials.apiKey,
+      credentials.secretKey,
+      credentials.passphrase,
+      'POST',
+      path,
+      body
     );
 
-    const response = await fetch(`${OKX_API_URL}${path}`, {  
+    const response = await fetch(`https://www.okx.com${path}`, {
       method: 'POST',
       headers,
       body
     });
-    
-    const text = await response.text();
-    createLog('API', `Response: ${text}`);
-    
-    const responseData = JSON.parse(text);
-    if (!response.ok || responseData.code === '1') {
-      createLog('API', `OKX API error: ${text}`);
-      throw new Error(`API Error: ${responseData.msg || text}`);
+
+    const result = await response.json();
+    createLog('API', `Response: ${JSON.stringify(result)}`);
+
+    if (result.code !== '0') {
+      throw new Error(`API Error: ${result.msg}`);
     }
-    
-    createLog('API', `OKX API success: ${text}`);
-    return {
-      ...responseData,
-      requestTimestamp: tradeTimestamp,
-      orderDetails: data
-    };
+
+    return result;
   } catch (error) {
     createLog('API', `Trade execution failed: ${error.message}`);
     throw error;
@@ -599,6 +580,20 @@ const validateBrokerTag = (tag) => {
   }
 };
 
+// Token validation function
+function validateAuthToken(payload, env) {
+  const { authToken } = payload;
+  
+  if (!authToken) {
+    throw new Error('Authentication token is required');
+  }
+
+  // Use constant-time comparison to prevent timing attacks
+  if (authToken !== env.WEBHOOK_AUTH_TOKEN) {
+    throw new Error('Invalid authentication token');
+  }
+}
+
 // Health check endpoint
 router.get('/', () =>
   new Response(JSON.stringify({
@@ -629,6 +624,9 @@ router.post('/', async (request, env) => {
     } catch (error) {
       throw new Error('Invalid JSON payload');
     }
+
+    // Token validation as the first step
+    validateAuthToken(payload, env);
 
     // Validate payload
     validatePayload(payload);
@@ -676,6 +674,18 @@ router.post('/', async (request, env) => {
     });
 
   } catch (error) {
+    // Add specific handling for auth errors
+    if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
+      return new Response(JSON.stringify({
+        status: 'error',
+        message: 'Unauthorized',
+        requestId
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
     createLog('ERROR', `Error: ${error.message}\nStack: ${error.stack}`);
     
     return new Response(JSON.stringify({

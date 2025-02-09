@@ -86,6 +86,7 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
@@ -99,6 +100,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "sell",
@@ -112,6 +114,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
@@ -127,6 +130,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "side": "buy",
@@ -140,6 +144,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "side": "sell",
@@ -153,6 +158,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "marginMode": "cross",
@@ -165,6 +171,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "marginMode": "cross",
@@ -197,7 +204,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
   "results": [
     {
       "status": "rejected",
-      "error": "Insufficient balance for order"
+      "error": "Error message here"
     }
   ]
 }
@@ -211,6 +218,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 curl -X POST http://localhost:8787/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
@@ -222,6 +230,7 @@ curl -X POST http://localhost:8787/ \
 curl -X POST http://localhost:8787/ \
   -H "Content-Type: application/json" \
   -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "marginMode": "cross",
@@ -239,6 +248,7 @@ import json
 url = "https://webhook.quantmarketintelligence.com/"
 headers = {"Content-Type": "application/json"}
 payload = {
+    "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
@@ -256,11 +266,12 @@ const fetch = require('node-fetch');
 
 const url = 'https://webhook.quantmarketintelligence.com/';
 const payload = {
-    symbol: 'BTC-USDT',
-    type: 'spot',
-    side: 'buy',
-    qty: '100%',
-    marginMode: 'cross'
+    "authToken": "YOUR_AUTH_TOKEN",
+    "symbol": "BTC-USDT",
+    "type": "spot",
+    "side": "buy",
+    "qty": "100%",
+    "marginMode": "cross"
 };
 
 fetch(url, {
@@ -280,6 +291,7 @@ fetch(url, {
 
 2. **Payload Validation**
    - Required fields:
+     - `authToken`: Authentication token
      - `symbol`: Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
      - `type`: Trade type ("spot" or "perpetual")
      - `marginMode`: Margin mode ("cross" or "isolated")
@@ -300,6 +312,39 @@ fetch(url, {
    - Returns success/failure count
    - Includes detailed error messages if any
    - Provides trade execution details
+
+## Request Parameters
+
+### Required Parameters
+- `authToken` (string): Your authentication token for the webhook API
+- `symbol` (string): Trading pair (e.g., "BTC-USDT" for spot, "BTC-USD-SWAP" for perpetual)
+- `type` (string): Trade type, either "spot" or "perpetual"
+- `marginMode` (string): Margin mode, "cross" or "isolated"
+
+### Optional Parameters
+- `side` (string): Trade side, "buy" or "sell" (required unless closing position)
+- `qty` (string): Trade quantity, can be fixed amount or percentage (e.g., "0.1" or "100%")
+- `closePosition` (boolean): Whether to close an existing position (perpetual only)
+
+### Parameter Notes
+1. **Spot Trading**
+   - Uses cash mode by default
+   - Supports percentage-based quantities
+   - Automatically handles quote/base currency for buy/sell
+
+2. **Perpetual Trading**
+   - Uses cross margin by default
+   - Supports position closing with `closePosition: true`
+   - Automatically handles position sides (long/short)
+   - Supports percentage-based quantities
+   - Rounds quantities to contract lot sizes
+
+### Size Calculation
+- Percentage quantities (e.g., "100%", "50%") are calculated based on:
+  - Available balance for spot trades
+  - Maximum position size for perpetual trades
+- All sizes are automatically rounded to the instrument's lot size
+- Zero or invalid sizes are rejected with appropriate error messages
 
 ## Error Handling
 
@@ -410,12 +455,13 @@ Content-Type: application/json
 **Request Format**
 ```json
 {
-  "symbol": string,      // Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
-  "type": string,        // "spot" or "perpetual"
-  "marginMode": string,  // "cross" or "isolated"
-  "side": string,        // Required for opening positions: "buy" or "sell"
-  "qty": string,         // Required for opening positions: amount or percentage (e.g., "0.1" or "50%")
-  "closePosition": bool  // Optional: set to true to close position (perpetual only)
+  "authToken": string,      // Authentication token
+  "symbol": string,         // Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
+  "type": string,           // "spot" or "perpetual"
+  "marginMode": string,     // "cross" or "isolated"
+  "side": string,           // Required for opening positions: "buy" or "sell"
+  "qty": string,            // Required for opening positions: amount or percentage (e.g., "0.1" or "50%")
+  "closePosition": bool     // Optional: set to true to close position (perpetual only)
 }
 ```
 
@@ -447,6 +493,40 @@ Content-Type: application/json
 }
 ```
 
+## Security Considerations
+
+### Authentication
+All webhook requests must include an authentication token in the payload. This token must match the pre-shared token configured in the Cloudflare Worker.
+
+Example of an authenticated request:
+```bash
+curl -X POST https://webhook.quantmarketintelligence.com/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
+    "symbol": "BTC-USDT",
+    "type": "spot",
+    "side": "buy",
+    "qty": "100%",
+    "marginMode": "cross"
+  }'
+```
+
+If the token is missing or invalid, the API will return a 401 Unauthorized response:
+```json
+{
+  "status": "error",
+  "message": "Unauthorized",
+  "requestId": "unique-request-id"
+}
+```
+
+### API Key Management
+- API keys are stored securely in Cloudflare D1 database
+- Only the first 4 characters of API keys are logged for traceability
+- Keys are retrieved fresh for each request
+- Support for multiple API keys with different permissions
+
 ## Implementation Details
 
 ### Order ID Generation
@@ -468,14 +548,11 @@ For perpetual futures:
    - Always uses posSide = 'net'
 
 ### Size Calculation
-1. **Percentage-based**
-   - Calculates size based on available balance
-   - For spot: Uses available asset balance
-   - For futures: Converts balance to contracts
-
-2. **Absolute Values**
-   - Direct use of provided quantity
-   - Validates against minimum/maximum limits
+- Percentage quantities (e.g., "100%", "50%") are calculated based on:
+  - Available balance for spot trades
+  - Maximum position size for perpetual trades
+- All sizes are automatically rounded to the instrument's lot size
+- Zero or invalid sizes are rejected with appropriate error messages
 
 ## Deployment
 
@@ -545,7 +622,7 @@ curl http://localhost:8787/
 # Test trade execution
 curl -X POST http://localhost:8787/ \
   -H "Content-Type: application/json" \
-  -d '{"symbol":"BTC-USDT","type":"spot","side":"buy","qty":"100%","marginMode":"cross"}'
+  -d '{"authToken":"YOUR_AUTH_TOKEN","symbol":"BTC-USDT","type":"spot","side":"buy","qty":"100%","marginMode":"cross"}'
 ```
 
 ### Production Testing
@@ -554,30 +631,6 @@ Always test with small amounts first:
 2. Test percentage-based sizing
 3. Verify position management
 4. Monitor execution times
-
-## Security Considerations
-
-### API Key Management
-1. **Storage**
-   - Keys stored in D1 database
-   - Encrypted at rest
-   - Access logged and monitored
-
-2. **Permissions**
-   - Use read-only keys for balance checks
-   - Trading keys with minimal permissions
-   - Regular key rotation recommended
-
-### Request Security
-1. **Rate Limiting**
-   - Per-IP limits
-   - Burst protection
-   - Automatic blocking of suspicious activity
-
-2. **Input Validation**
-   - Strict payload validation
-   - Symbol whitelist
-   - Size limits enforcement
 
 ## Maintenance
 
@@ -617,6 +670,3 @@ Always test with small amounts first:
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-
-
-
