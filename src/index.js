@@ -444,7 +444,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
       if (payload.qty.includes('%')) {
         createLog('TRADE', `Getting max available size for ${payload.qty} trade`);
         const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
-        createLog('TRADE', `Max size response: ${JSON.stringify(maxSize)}`);
+        createLog('TRADE', `Max size response: ${JSON.stringify(redactSensitiveData(maxSize))}`);
         
         // For spot trades, we need to set tgtCcy first
         if (payload.type === 'spot') {
@@ -503,7 +503,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
     }
 
     createLog('TRADE', `Executing ${data.side} order for ${data.instId}`);
-    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Data: ${JSON.stringify(data)}`);
+    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`);
 
     const path = '/api/v5/trade/order';
     const body = JSON.stringify(data);
@@ -523,7 +523,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
     });
 
     const result = await response.json();
-    createLog('API', `Response: ${JSON.stringify(result)}`);
+    createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`);
 
     if (result.code !== '0') {
       throw new Error(`API Error: ${result.msg}`);
@@ -573,6 +573,17 @@ function mask(value, visible = 4) {
   return value.substring(0, visible) + '...';
 }
 
+// Helper: Redact sensitive data
+function redactSensitiveData(obj) {
+  if (!obj) return obj;
+  
+  const copy = { ...obj };
+  if (copy.authToken) {
+    copy.authToken = copy.authToken.substring(0, 4) + '***';
+  }
+  return copy;
+}
+
 // Validate broker tag at startup
 const validateBrokerTag = (tag) => {
   if (!tag || typeof tag !== 'string' || tag.length === 0) {
@@ -614,13 +625,13 @@ router.post('/', async (request, env) => {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
 
   try {
-    createLog('REQUEST', 'Received webhook request');
+    createLog('REQUEST', `Received webhook request`);
     
     // Parse request body
     let payload;
     try {
       payload = await request.json();
-      createLog('PAYLOAD', `Received payload: ${JSON.stringify(payload)}`);
+      createLog('PAYLOAD', `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`);
     } catch (error) {
       throw new Error('Invalid JSON payload');
     }
