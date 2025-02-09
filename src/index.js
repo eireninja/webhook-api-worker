@@ -402,6 +402,47 @@ async function getCurrentPosition(instId, credentials) {
 // Helper: Execute a trade with OKX
 async function executeTrade(payload, credentials, brokerTag, requestId) {
   try {
+    // Set leverage first if specified for perpetual/margin
+    if (payload.leverage && (payload.type === 'perpetual' || payload.marginMode)) {
+      const leverageData = {
+        instId: formatTradingPair(payload.symbol, payload.type),
+        lever: payload.leverage.toString(),
+        mgnMode: payload.marginMode || 'cross', // Default to cross if not specified
+      };
+
+      // For perpetual futures
+      if (payload.type === 'perpetual') {
+        leverageData.posSide = payload.symbol.includes('-USD-') ? 
+          (payload.side === 'buy' ? 'long' : 'short') : 'net';
+      }
+
+      createLog('TRADE', `Setting leverage to ${payload.leverage}x for ${leverageData.instId}`, requestId, credentials.apiKey);
+      
+      const leveragePath = '/api/v5/account/set-leverage';
+      const leverageBody = JSON.stringify(leverageData);
+      const { headers: leverageHeaders } = await generateOkxRequest(
+        credentials.apiKey,
+        credentials.secretKey,
+        credentials.passphrase,
+        'POST',
+        leveragePath,
+        leverageBody
+      );
+
+      const leverageResponse = await fetch(`https://www.okx.com${leveragePath}`, {
+        method: 'POST',
+        headers: leverageHeaders,
+        body: leverageBody
+      });
+
+      const leverageResult = await leverageResponse.json();
+      createLog('API', `Leverage response: ${JSON.stringify(redactSensitiveData(leverageResult))}`, requestId, credentials.apiKey);
+
+      if (leverageResult.code !== '0') {
+        throw new Error(`Failed to set leverage: ${leverageResult.msg}`);
+      }
+    }
+
     const data = {
       instId: formatTradingPair(payload.symbol, payload.type),
       tdMode: payload.type === 'spot' ? 'cash' : (payload.marginMode || 'cross'),
@@ -413,11 +454,11 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
     // Get instrument info for lot size
     const instrumentInfo = await getInstrumentInfo(data.instId, credentials);
     const lotSize = parseFloat(instrumentInfo.lotSz);
-    createLog('TRADE', `Lot size for ${data.instId}: ${lotSize}`);
+    createLog('TRADE', `Lot size for ${data.instId}: ${lotSize}`, requestId, credentials.apiKey);
 
     // Handle position closing for perpetual futures
     if (payload.type === 'perpetual' && payload.closePosition === true) {
-      createLog('TRADE', 'Closing position - fetching current position size');
+      createLog('TRADE', 'Closing position - fetching current position size', requestId, credentials.apiKey);
       const position = await getCurrentPosition(payload.symbol, credentials);
       
       // Set side opposite to current position
@@ -436,15 +477,15 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
         data.posSide = 'net';
       }
       
-      createLog('TRADE', `Closing position of ${data.sz} contracts with ${data.side} and posSide ${data.posSide}`);
+      createLog('TRADE', `Closing position of ${data.sz} contracts with ${data.side} and posSide ${data.posSide}`, requestId, credentials.apiKey);
     } else {
       data.side = payload.side.toLowerCase();
       
       // Handle percentage-based quantities
       if (payload.qty.includes('%')) {
-        createLog('TRADE', `Getting max available size for ${payload.qty} trade`);
+        createLog('TRADE', `Getting max available size for ${payload.qty} trade`, requestId, credentials.apiKey);
         const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
-        createLog('TRADE', `Max size response: ${JSON.stringify(redactSensitiveData(maxSize))}`);
+        createLog('TRADE', `Max size response: ${JSON.stringify(redactSensitiveData(maxSize))}`, requestId, credentials.apiKey);
         
         // For spot trades, we need to set tgtCcy first
         if (payload.type === 'spot') {
@@ -455,7 +496,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
         
         // Use availSell for sell orders, availBuy for buy orders
         const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-        createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`);
+        createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`, requestId, credentials.apiKey);
         
         if (!maxQty || maxQty === '0') {
           throw new Error(`No available quantity for ${data.side} order`);
@@ -474,7 +515,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
           data.sz = roundedSize.toString();
         }
         
-        createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`);
+        createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`, requestId, credentials.apiKey);
 
         if (parseFloat(data.sz) <= 0) {
           throw new Error(`Invalid order size: ${data.sz}. Max available: ${maxQty}`);
@@ -502,8 +543,8 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
       }
     }
 
-    createLog('TRADE', `Executing ${data.side} order for ${data.instId}`);
-    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`);
+    createLog('TRADE', `Executing ${data.side} order for ${data.instId}`, requestId, credentials.apiKey);
+    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`, requestId, credentials.apiKey);
 
     const path = '/api/v5/trade/order';
     const body = JSON.stringify(data);
@@ -523,7 +564,7 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
     });
 
     const result = await response.json();
-    createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`);
+    createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey);
 
     if (result.code !== '0') {
       throw new Error(`API Error: ${result.msg}`);
@@ -531,14 +572,14 @@ async function executeTrade(payload, credentials, brokerTag, requestId) {
 
     return result;
   } catch (error) {
-    createLog('API', `Trade execution failed: ${error.message}`);
+    createLog('API', `Trade execution failed: ${error.message}`, requestId, credentials.apiKey);
     throw error;
   }
 }
 
 // Helper: Get API keys from database
 async function getApiKeys(env, requestId) {
-  createLog('DB', 'Fetching API keys from database');
+  createLog('DB', 'Fetching API keys from database', requestId);
   
   try {
     const stmt = await env.DB.prepare(
@@ -552,19 +593,93 @@ async function getApiKeys(env, requestId) {
     
     // Debug log (first 4 chars only)
     stmt.results.forEach((key, index) => {
-      createLog('DB', `Key ${index + 1}: API=${mask(key.api_key)}, Secret=${mask(key.secret_key)}, Pass=${mask(key.passphrase)}`);
+      createLog('DB', `Key ${index + 1}: API=${mask(key.api_key)}, Secret=${mask(key.secret_key)}, Pass=${mask(key.passphrase)}`, requestId);
     });
     
     return stmt.results;
   } catch (error) {
-    createLog('DB', `Database error: ${error.message}`);
+    createLog('DB', `Database error: ${error.message}`, requestId);
     throw new Error('Failed to retrieve API keys');
   }
 }
 
-// Helper: Create log with simple format
-function createLog(category, action) {
-  console.log(`[${category}] ${action}`);
+// Helper: Create log entry with request and account info
+function createLog(type, message, requestId = '', accountId = '') {
+  const timestamp = new Date().toISOString();
+  const accountInfo = accountId ? `[Account: ${mask(accountId)}]` : '';
+  const reqInfo = requestId ? `[ReqID: ${requestId.substring(0, 8)}]` : '';
+  console.log(`[${type}]${reqInfo}${accountInfo} ${message}`);
+}
+
+// Helper: Execute trades for multiple accounts
+async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId) {
+  createLog('TRADE', `Starting parallel execution for ${apiKeys.length} accounts`, requestId);
+
+  // Group API keys by instrument to respect rate limits
+  const groupedKeys = {};
+  for (const key of apiKeys) {
+    const instId = formatTradingPair(payload.symbol, payload.type);
+    if (!groupedKeys[instId]) {
+      groupedKeys[instId] = [];
+    }
+    groupedKeys[instId].push(key);
+  }
+
+  // Execute trades in parallel for each instrument, respecting rate limits
+  const allResults = await Promise.all(
+    Object.entries(groupedKeys).map(async ([instId, keys]) => {
+      // Split keys into chunks of 10 to stay well within the 1000/2s limit
+      const chunkSize = 10;
+      const chunks = [];
+      for (let i = 0; i < keys.length; i += chunkSize) {
+        chunks.push(keys.slice(i, i + chunkSize));
+      }
+
+      // Process each chunk with a small delay to respect rate limits
+      const chunkResults = [];
+      for (const chunk of chunks) {
+        const chunkPromises = chunk.map(({ api_key, secret_key, passphrase }) => {
+          const credentials = {
+            apiKey: api_key,
+            secretKey: secret_key,
+            passphrase
+          };
+
+          return executeTrade(payload, credentials, brokerTag, requestId)
+            .then(result => ({
+              success: true,
+              accountId: mask(api_key),
+              status: 'success',
+              ...result
+            }))
+            .catch(error => ({
+              success: false,
+              accountId: mask(api_key),
+              status: 'rejected',
+              error: error.message
+            }));
+        });
+
+        // Execute chunk in parallel
+        const results = await Promise.all(chunkPromises);
+        chunkResults.push(...results);
+
+        // Add small delay between chunks to respect rate limits
+        if (chunks.length > 1) {
+          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
+        }
+      }
+
+      return chunkResults;
+    })
+  );
+
+  // Flatten results and separate successful and failed trades
+  const results = allResults.flat();
+  return {
+    successful: results.filter(r => r.success),
+    failed: results.filter(r => !r.success)
+  };
 }
 
 // Helper: Mask sensitive strings
@@ -625,13 +740,13 @@ router.post('/', async (request, env) => {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
 
   try {
-    createLog('REQUEST', `Received webhook request`);
+    createLog('REQUEST', `Received webhook request from ${ip}`, requestId);
     
     // Parse request body
     let payload;
     try {
       payload = await request.json();
-      createLog('PAYLOAD', `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`);
+      createLog('PAYLOAD', `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId);
     } catch (error) {
       throw new Error('Invalid JSON payload');
     }
@@ -644,32 +759,24 @@ router.post('/', async (request, env) => {
 
     // Get API keys from database
     const apiKeys = await getApiKeys(env, requestId);
-    createLog('TRADE', 'Processing trades');
+    createLog('TRADE', `Processing trades for ${apiKeys.length} accounts`, requestId);
     
-    // Execute trades for each API key
-    const tradePromises = apiKeys.map(async ({ api_key, secret_key, passphrase }) => {
-      const credentials = { 
-        apiKey: api_key, 
-        secretKey: secret_key, 
-        passphrase 
-      };
-      return executeTrade(payload, credentials, env.BROKER_TAG || 'default', requestId);
-    });
-
-    const results = await Promise.allSettled(tradePromises);
-    const successfulTrades = results.filter(r => r.status === 'fulfilled');
-    const failedTrades = results.filter(r => r.status === 'rejected');
+    // Execute trades for all accounts
+    const results = await executeMultiAccountTrades(
+      payload, 
+      apiKeys, 
+      env.BROKER_TAG || 'default',
+      requestId
+    );
     
-    createLog('TRADE', `Completed: ${successfulTrades.length} successful, ${failedTrades.length} failed`);
+    createLog('TRADE', `Completed: ${results.successful.length} successful, ${results.failed.length} failed`, requestId);
     
-    if (failedTrades.length > 0) {
+    if (results.failed.length > 0) {
       return new Response(JSON.stringify({
-        message: `Processed ${successfulTrades.length} successful and ${failedTrades.length} failed trades`,
-        results: failedTrades.map(r => ({ 
-          status: 'rejected', 
-          error: r.reason?.message || 'Unknown error',
-          details: DEBUG ? r.reason?.stack : undefined
-        }))
+        message: `Processed ${results.successful.length} successful and ${results.failed.length} failed trades`,
+        requestId: requestId,
+        successful: results.successful,
+        failed: results.failed
       }), {
         status: 207,  // 207 Multi-Status for partial success
         headers: { 'Content-Type': 'application/json' }
@@ -677,8 +784,9 @@ router.post('/', async (request, env) => {
     }
 
     return new Response(JSON.stringify({
-      message: `Successfully processed ${successfulTrades.length} trades`,
-      results: successfulTrades.map(r => ({ status: 'success', ...r.value }))
+      message: `Successfully processed ${results.successful.length} trades`,
+      requestId: requestId,
+      results: results.successful
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
@@ -697,10 +805,11 @@ router.post('/', async (request, env) => {
       });
     }
     
-    createLog('ERROR', `Error: ${error.message}\nStack: ${error.stack}`);
+    createLog('ERROR', `Error: ${error.message}\nStack: ${error.stack}`, requestId);
     
     return new Response(JSON.stringify({
       error: error.message,
+      requestId: requestId,
       timestamp: new Date().toISOString(),
       details: DEBUG ? error.stack : undefined
     }), {

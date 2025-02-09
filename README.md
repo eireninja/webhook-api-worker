@@ -1,6 +1,6 @@
 # OKX Trading Webhook API
 
-A high-performance, secure webhook API built on Cloudflare Workers for executing trades on OKX. This service accepts webhook requests and executes trades across multiple OKX accounts simultaneously, supporting both spot and perpetual futures trading.
+A high-performance, secure webhook API built on Cloudflare Workers for executing trades on OKX. This service accepts webhook requests and executes trades across multiple OKX accounts simultaneously, supporting spot trading, margin trading with customizable leverage, and perpetual futures trading.
 
 ## Table of Contents
 - [Features](#features)
@@ -24,11 +24,14 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 ## Features
 
 - **Multi-Account Support**: Execute trades across multiple OKX accounts simultaneously
-- **Trade Types**: Support for spot trading and perpetual futures
+- **Trade Types**: Support for spot trading, margin trading with leverage, and perpetual futures
 - **Position Management**: Open and close positions with percentage-based sizing
+- **Leverage Control**: Set custom leverage for margin and perpetual futures trading
 - **Market Orders**: Quick execution with market orders
 - **Secure**: Built-in security features and API key management
 - **Logging**: Comprehensive logging for debugging and auditing
+- **Rate Limiting**: Smart handling of OKX API rate limits for parallel execution
+- **Percentage-Based Trading**: Trade with exact percentages of your available balance
 
 ## Architecture
 
@@ -44,6 +47,7 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 3. **Auth Manager**: Manages API key retrieval and signature generation
 4. **Trade Executor**: Executes trades on OKX
 5. **Logger**: Comprehensive logging system
+6. **Rate Limiter**: Smart handling of API rate limits
 
 ## Security
 
@@ -63,25 +67,42 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 ### Supported Trade Types
 1. **Spot Trading**
    - Buy/Sell with USDT pairs
+   - Percentage-based quantity support (e.g., "50%" uses half of available balance)
+   - Market orders
+   - Automatic balance calculation
+
+2. **Margin Trading**
+   - Cross and isolated margin modes
+   - Customizable leverage settings (1x to 10x)
    - Percentage-based quantity support
    - Market orders
+   - Automatic margin calculation
 
-2. **Perpetual Futures**
+3. **Perpetual Futures**
    - Inverse perpetuals (BTC-USD-SWAP)
    - USDT-margined perpetuals
    - Position opening and closing
    - Automatic position side management
+   - Customizable leverage settings (1x to 125x depending on the pair)
+   - Cross and isolated margin modes
+   - Percentage-based position sizing
 
 ### Position Sizing
 - Percentage-based sizing (e.g., "100%", "50%")
 - Automatic maximum size calculation
-- Balance-aware sizing for both spot and futures
+- Balance-aware sizing for spot, margin, and futures
+
+### Rate Limit Management
+- Smart chunking of multi-account trades
+- Respects OKX's 1000 orders/2s sub-account limit
+- Per-instrument rate limit compliance
+- Parallel execution within limits
 
 ## Webhook Examples
 
 ### 1. Spot Trading
 
-#### Buy Spot (Minimal)
+#### Buy 50% of Available Balance
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
@@ -90,12 +111,11 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
-    "qty": "100%",
-    "marginMode": "cross"
+    "qty": "50%"
   }'
 ```
 
-#### Sell Spot (Minimal)
+#### Sell 75% of Available Balance
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
@@ -104,12 +124,13 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "sell",
-    "qty": "100%",
-    "marginMode": "cross"
+    "qty": "75%"
   }'
 ```
 
-#### Buy Spot (Fixed Amount)
+### 2. Margin Trading
+
+#### Buy with 3x Leverage Using 50% of Available Margin
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
@@ -118,14 +139,15 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
-    "qty": "0.1",
-    "marginMode": "cross"
+    "qty": "50%",
+    "marginMode": "cross",
+    "leverage": 3
   }'
 ```
 
-### 2. Perpetual Futures
+### 3. Perpetual Futures
 
-#### Open Long Position (Minimal)
+#### Open Long Position with 10x Leverage Using 25% of Available Balance
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
@@ -134,12 +156,13 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
     "side": "buy",
-    "qty": "100%",
-    "marginMode": "cross"
+    "qty": "25%",
+    "marginMode": "cross",
+    "leverage": 10
   }'
 ```
 
-#### Open Short Position
+#### Open Short Position with Isolated Margin
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
@@ -149,7 +172,8 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "type": "perpetual",
     "side": "sell",
     "qty": "50%",
-    "marginMode": "cross"
+    "marginMode": "isolated",
+    "leverage": 5
   }'
 ```
 
@@ -166,225 +190,77 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
   }'
 ```
 
-#### Close Position (Partial)
-```bash
-curl -X POST https://webhook.quantmarketintelligence.com/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USD-SWAP",
-    "type": "perpetual",
-    "marginMode": "cross",
-    "closePosition": true,
-    "qty": "50%"
-  }'
-```
-
 ### Example Responses
 
 #### Successful Trade
 ```json
 {
-  "message": "Successfully processed 1 trade",
-  "results": [
-    {
-      "status": "success",
-      "ordId": "12345678",
-      "clOrdId": "1b1564346dbaBCDE1707261846000",
-      "tag": "1b1564346dbaBCDE"
-    }
-  ]
+  "message": "Successfully processed trades",
+  "results": {
+    "successful": [
+      {
+        "accountId": "abcd****",
+        "status": "success",
+        "ordId": "12345678",
+        "clOrdId": "1b1564346dbaBCDE1707261846000",
+        "tag": "1b1564346dbaBCDE"
+      }
+    ],
+    "failed": []
+  }
 }
 ```
 
 #### Failed Trade
 ```json
 {
-  "message": "Processed 0 successful and 1 failed trades",
-  "results": [
-    {
-      "status": "rejected",
-      "error": "Error message here"
-    }
-  ]
+  "message": "Some trades failed",
+  "results": {
+    "successful": [],
+    "failed": [
+      {
+        "accountId": "abcd****",
+        "status": "rejected",
+        "error": "Detailed error message"
+      }
+    ]
+  }
 }
-```
-
-### Testing Examples
-
-#### Local Testing
-```bash
-# Test spot buy
-curl -X POST http://localhost:8787/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USDT",
-    "type": "spot",
-    "side": "buy",
-    "qty": "0.001",
-    "marginMode": "cross"
-  }'
-
-# Test perpetual close
-curl -X POST http://localhost:8787/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USD-SWAP",
-    "type": "perpetual",
-    "marginMode": "cross",
-    "closePosition": true
-  }'
-```
-
-### Using with Other Tools
-
-#### Python Example
-```python
-import requests
-import json
-
-url = "https://webhook.quantmarketintelligence.com/"
-headers = {"Content-Type": "application/json"}
-payload = {
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USDT",
-    "type": "spot",
-    "side": "buy",
-    "qty": "100%",
-    "marginMode": "cross"
-}
-
-response = requests.post(url, headers=headers, json=payload)
-print(json.dumps(response.json(), indent=2))
-```
-
-#### Node.js Example
-```javascript
-const fetch = require('node-fetch');
-
-const url = 'https://webhook.quantmarketintelligence.com/';
-const payload = {
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USDT",
-    "type": "spot",
-    "side": "buy",
-    "qty": "100%",
-    "marginMode": "cross"
-};
-
-fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-})
-.then(res => res.json())
-.then(json => console.log(JSON.stringify(json, null, 2)));
 ```
 
 ## Request Flow
 
-1. **Request Reception**
-   - Validates Content-Type and request method
-   - Generates unique request ID
+1. **Webhook Received**
+   - Validate request payload
+   - Authenticate request
 
-2. **Payload Validation**
-   - Required fields:
-     - `authToken`: Authentication token
-     - `symbol`: Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
-     - `type`: Trade type ("spot" or "perpetual")
-     - `marginMode`: Margin mode ("cross" or "isolated")
-   - Conditional fields:
-     - For opening positions:
-       - `side`: Trade direction ("buy" or "sell")
-       - `qty`: Order size (number or percentage)
-     - For closing positions:
-       - `closePosition`: Set to true
+2. **Trade Preparation**
+   - Retrieve API keys
+   - Set leverage if specified
+   - Calculate position sizes
 
-3. **Trade Processing**
-   - Retrieves API keys from database
-   - Calculates order size based on available balance
-   - Determines correct position side for futures
-   - Executes trades in parallel across all accounts
+3. **Trade Execution**
+   - Group trades by instrument
+   - Execute in parallel within rate limits
+   - Handle responses and errors
 
-4. **Response Generation**
-   - Returns success/failure count
-   - Includes detailed error messages if any
-   - Provides trade execution details
-
-## Request Parameters
-
-### Required Parameters
-- `authToken` (string): Your authentication token for the webhook API
-- `symbol` (string): Trading pair (e.g., "BTC-USDT" for spot, "BTC-USD-SWAP" for perpetual)
-- `type` (string): Trade type, either "spot" or "perpetual"
-- `marginMode` (string): Margin mode, "cross" or "isolated"
-
-### Optional Parameters
-- `side` (string): Trade side, "buy" or "sell" (required unless closing position)
-- `qty` (string): Trade quantity, can be fixed amount or percentage (e.g., "0.1" or "100%")
-- `closePosition` (boolean): Whether to close an existing position (perpetual only)
-
-### Parameter Notes
-1. **Spot Trading**
-   - Uses cash mode by default
-   - Supports percentage-based quantities
-   - Automatically handles quote/base currency for buy/sell
-
-2. **Perpetual Trading**
-   - Uses cross margin by default
-   - Supports position closing with `closePosition: true`
-   - Automatically handles position sides (long/short)
-   - Supports percentage-based quantities
-   - Rounds quantities to contract lot sizes
-
-### Size Calculation
-- Percentage quantities (e.g., "100%", "50%") are calculated based on:
-  - Available balance for spot trades
-  - Maximum position size for perpetual trades
-- All sizes are automatically rounded to the instrument's lot size
-- Zero or invalid sizes are rejected with appropriate error messages
+4. **Response**
+   - Return results for all accounts
+   - Include success/failure status
+   - Masked account identifiers
 
 ## Error Handling
 
-### Common Errors
-
-1. **Validation Errors**
-   - Invalid symbol format
-   - Missing required fields
-   - Invalid quantity format
-   - Unsupported trade type
-
-2. **Balance Errors**
-   - Insufficient balance
-   - Invalid position size
-   - No position found (for closing)
-
-3. **API Errors**
-   - Rate limiting
-   - Invalid API credentials
-   - OKX API errors
-
-### Error Response Format
-```json
-{
-  "message": "Processed 0 successful and 1 failed trades",
-  "results": [
-    {
-      "status": "rejected",
-      "error": "Error message here"
-    }
-  ]
-}
-```
+- **Rate Limits**: Smart retry with backoff
+- **Invalid Parameters**: Clear error messages
+- **Network Issues**: Proper error propagation
+- **Account Issues**: Individual account failure handling
 
 ## Configuration
 
 ### Environment Variables
 - `BROKER_TAG`: Tag for identifying trades
 - Database credentials (managed by Cloudflare)
-- Debug mode flag
 
 ### Database Schema
 ```sql
@@ -457,10 +333,11 @@ Content-Type: application/json
 {
   "authToken": string,      // Authentication token
   "symbol": string,         // Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
-  "type": string,           // "spot" or "perpetual"
+  "type": string,           // "spot", "margin", or "perpetual"
   "marginMode": string,     // "cross" or "isolated"
   "side": string,           // Required for opening positions: "buy" or "sell"
   "qty": string,            // Required for opening positions: amount or percentage (e.g., "0.1" or "50%")
+  "leverage": number,       // Optional: leverage for margin and perpetual trades
   "closePosition": bool     // Optional: set to true to close position (perpetual only)
 }
 ```
@@ -468,30 +345,81 @@ Content-Type: application/json
 **Success Response**
 ```json
 {
-  "message": "Successfully processed 1 trade",
-  "results": [
-    {
-      "status": "success",
-      "ordId": "12345678",
-      "clOrdId": "1b1564346dbaBCDE1707261846000",
-      "tag": "1b1564346dbaBCDE"
-    }
-  ]
+  "message": "Successfully processed trades",
+  "results": {
+    "successful": [
+      {
+        "accountId": "abcd****",
+        "status": "success",
+        "ordId": "12345678",
+        "clOrdId": "1b1564346dbaBCDE1707261846000",
+        "tag": "1b1564346dbaBCDE"
+      }
+    ],
+    "failed": []
+  }
 }
 ```
 
 **Error Response**
 ```json
 {
-  "message": "Processed 0 successful and 1 failed trades",
-  "results": [
-    {
-      "status": "rejected",
-      "error": "Detailed error message"
-    }
-  ]
+  "message": "Some trades failed",
+  "results": {
+    "successful": [],
+    "failed": [
+      {
+        "accountId": "abcd****",
+        "status": "rejected",
+        "error": "Detailed error message"
+      }
+    ]
+  }
 }
 ```
+
+## Request Parameters
+
+### Required Parameters
+[Previous required parameters remain unchanged]
+
+### Optional Parameters
+- `side` (string): Trade side, "buy" or "sell" (required unless closing position)
+- `qty` (string): Trade quantity, can be fixed amount or percentage (e.g., "0.1" or "50%")
+- `closePosition` (boolean): Whether to close an existing position (perpetual only)
+- `leverage` (number): Leverage multiplier for margin and perpetual trades (e.g., 3 for 3x leverage)
+- `marginMode` (string): Margin mode for leveraged trades, "cross" or "isolated" (default: "cross")
+
+### Parameter Notes
+
+1. **Quantity Specification**
+   - Percentage Format: "X%" (e.g., "50%", "100%")
+   - For spot trading:
+     - Buy: Percentage of available quote currency (e.g., USDT)
+     - Sell: Percentage of available base currency (e.g., BTC)
+   - For margin/perpetual:
+     - Percentage of available margin balance
+   - Maximum allowed: "100%"
+   - Minimum: Greater than 0%
+
+2. **Spot Trading**
+   [Previous spot trading notes remain unchanged]
+
+3. **Margin Trading**
+   - Uses specified margin mode (cross/isolated)
+   - Supports leverage settings from 1x to 10x
+   - Leverage must be set before trade execution
+   - Percentage-based quantities supported
+   - Automatically calculates available margin
+
+4. **Perpetual Trading**
+   - Uses specified margin mode (cross/isolated)
+   - Supports leverage settings from 1x to 125x (pair dependent)
+   - Leverage must be set before trade execution
+   - Supports position closing with `closePosition: true`
+   - Automatically handles position sides (long/short)
+   - Supports percentage-based quantities
+   - Rounds quantities to contract lot sizes
 
 ## Security Considerations
 
