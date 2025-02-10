@@ -517,9 +517,6 @@ For perpetual futures:
    name = "webhook-api"
    main = "src/index.js"
    compatibility_date = "2024-02-09"
-
-   [vars]
-   BROKER_TAG = "your_broker_tag"
    ```
 
 2. **Environment Variables**
