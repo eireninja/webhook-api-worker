@@ -583,8 +583,8 @@ async function getApiKeys(env, requestId) {
   
   try {
     const stmt = await env.DB.prepare(
-      'SELECT api_key, secret_key, passphrase FROM api_keys WHERE exchange = ? AND permissions != ?'
-    ).bind('OKX', 'read_only')
+      'SELECT api_key, secret_key, passphrase FROM api_keys WHERE exchange = ?'
+    ).bind('OKX')
     .all();
     
     if (!stmt.results || stmt.results.length === 0) {

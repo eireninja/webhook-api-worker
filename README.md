@@ -1,6 +1,6 @@
 # OKX Trading Webhook API
 
-A high-performance, secure webhook API built on Cloudflare Workers for executing trades on OKX. This service accepts webhook requests and executes trades across multiple OKX accounts simultaneously, supporting spot trading, margin trading with customizable leverage, and perpetual futures trading.
+A high-performance, secure webhook API built on Cloudflare Workers for executing trades on OKX. This service accepts webhook requests and executes trades across multiple OKX accounts simultaneously, supporting spot trading and perpetual futures trading.
 
 ## Table of Contents
 - [Features](#features)
@@ -24,9 +24,9 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 ## Features
 
 - **Multi-Account Support**: Execute trades across multiple OKX accounts simultaneously
-- **Trade Types**: Support for spot trading, margin trading with leverage, and perpetual futures
+- **Trade Types**: Support for spot trading, and perpetual futures
 - **Position Management**: Open and close positions with percentage-based sizing
-- **Leverage Control**: Set custom leverage for margin and perpetual futures trading
+- **Leverage Control**: Set custom leverage for perpetual futures trading
 - **Market Orders**: Quick execution with market orders
 - **Secure**: Built-in security features and API key management
 - **Logging**: Comprehensive logging for debugging and auditing
@@ -71,14 +71,7 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
    - Market orders
    - Automatic balance calculation
 
-2. **Margin Trading**
-   - Cross and isolated margin modes
-   - Customizable leverage settings (1x to 10x)
-   - Percentage-based quantity support
-   - Market orders
-   - Automatic margin calculation
-
-3. **Perpetual Futures**
+2. **Perpetual Futures**
    - Inverse perpetuals (BTC-USD-SWAP)
    - USDT-margined perpetuals
    - Position opening and closing
@@ -90,7 +83,7 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 ### Position Sizing
 - Percentage-based sizing (e.g., "100%", "50%")
 - Automatic maximum size calculation
-- Balance-aware sizing for spot, margin, and futures
+- Balance-aware sizing for spot, and futures
 
 ### Rate Limit Management
 - Smart chunking of multi-account trades
@@ -125,23 +118,6 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "type": "spot",
     "side": "sell",
     "qty": "75%"
-  }'
-```
-
-### 2. Margin Trading
-
-#### Buy with 3x Leverage Using 50% of Available Margin
-```bash
-curl -X POST https://webhook.quantmarketintelligence.com/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USDT",
-    "type": "spot",
-    "side": "buy",
-    "qty": "50%",
-    "marginMode": "cross",
-    "leverage": 3
   }'
 ```
 
@@ -273,6 +249,24 @@ CREATE TABLE api_keys (
 );
 ```
 
+## Environment Variables
+
+To set up the required environment variables, use the following wrangler commands:
+
+```bash
+# Set the webhook authentication token
+npx wrangler secret put WEBHOOK_AUTH_TOKEN --env production
+# Example: z8V%kewzQ%m%XKdMJGdWtbX8!V8ZKqHz
+
+# Set the broker tag (optional)
+npx wrangler secret put BROKER_TAG --env production
+# Example: default
+```
+
+These environment variables are required for the webhook API to function properly:
+- `WEBHOOK_AUTH_TOKEN`: Used to authenticate incoming webhook requests
+- `BROKER_TAG`: Optional tag to identify the broker instance (defaults to 'default' if not set)
+
 ## Rate Limiting
 - 60-second window
 - Maximum 20 requests per window
@@ -333,11 +327,11 @@ Content-Type: application/json
 {
   "authToken": string,      // Authentication token
   "symbol": string,         // Trading pair (e.g., "BTC-USDT" or "BTC-USD-SWAP")
-  "type": string,           // "spot", "margin", or "perpetual"
+  "type": string,           // "spot" or "perpetual"
   "marginMode": string,     // "cross" or "isolated"
   "side": string,           // Required for opening positions: "buy" or "sell"
   "qty": string,            // Required for opening positions: amount or percentage (e.g., "0.1" or "50%")
-  "leverage": number,       // Optional: leverage for margin and perpetual trades
+  "leverage": number,       // Optional: leverage for perpetual trades
   "closePosition": bool     // Optional: set to true to close position (perpetual only)
 }
 ```
@@ -387,7 +381,7 @@ Content-Type: application/json
 - `side` (string): Trade side, "buy" or "sell" (required unless closing position)
 - `qty` (string): Trade quantity, can be fixed amount or percentage (e.g., "0.1" or "50%")
 - `closePosition` (boolean): Whether to close an existing position (perpetual only)
-- `leverage` (number): Leverage multiplier for margin and perpetual trades (e.g., 3 for 3x leverage)
+- `leverage` (number): Leverage multiplier for perpetual trades (e.g., 3 for 3x leverage)
 - `marginMode` (string): Margin mode for leveraged trades, "cross" or "isolated" (default: "cross")
 
 ### Parameter Notes
@@ -397,7 +391,7 @@ Content-Type: application/json
    - For spot trading:
      - Buy: Percentage of available quote currency (e.g., USDT)
      - Sell: Percentage of available base currency (e.g., BTC)
-   - For margin/perpetual:
+   - For perpetual:
      - Percentage of available margin balance
    - Maximum allowed: "100%"
    - Minimum: Greater than 0%
@@ -405,14 +399,7 @@ Content-Type: application/json
 2. **Spot Trading**
    [Previous spot trading notes remain unchanged]
 
-3. **Margin Trading**
-   - Uses specified margin mode (cross/isolated)
-   - Supports leverage settings from 1x to 10x
-   - Leverage must be set before trade execution
-   - Percentage-based quantities supported
-   - Automatically calculates available margin
-
-4. **Perpetual Trading**
+3. **Perpetual Trading**
    - Uses specified margin mode (cross/isolated)
    - Supports leverage settings from 1x to 125x (pair dependent)
    - Leverage must be set before trade execution
@@ -430,14 +417,7 @@ Example of an authenticated request:
 ```bash
 curl -X POST https://webhook.quantmarketintelligence.com/ \
   -H "Content-Type: application/json" \
-  -d '{
-    "authToken": "YOUR_AUTH_TOKEN",
-    "symbol": "BTC-USDT",
-    "type": "spot",
-    "side": "buy",
-    "qty": "100%",
-    "marginMode": "cross"
-  }'
+  -d '{"authToken":"YOUR_AUTH_TOKEN","symbol":"BTC-USDT","type":"spot","side":"buy","qty":"100%","marginMode":"cross"}'
 ```
 
 If the token is missing or invalid, the API will return a 401 Unauthorized response:
