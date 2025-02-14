@@ -29,7 +29,7 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 - **Leverage Control**: Set custom leverage for perpetual futures trading
 - **Market Orders**: Quick execution with market orders
 - **Secure**: Built-in security features and API key management
-- **Logging**: Comprehensive logging for debugging and auditing
+- **Logging**: Comprehensive logging with Telegram notifications for real-time monitoring
 - **Rate Limiting**: Smart handling of OKX API rate limits for parallel execution
 - **Percentage-Based Trading**: Trade with exact percentages of your available balance
 
@@ -40,13 +40,14 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 - **Database**: Cloudflare D1 (SQLite at the edge)
 - **Language**: JavaScript
 - **Dependencies**: itty-router for routing
+- **Notifications**: Telegram Bot API for real-time alerts
 
 ### Key Components
 1. **Router**: Handles incoming HTTP requests
 2. **Validator**: Validates webhook payloads
 3. **Auth Manager**: Manages API key retrieval and signature generation
 4. **Trade Executor**: Executes trades on OKX
-5. **Logger**: Comprehensive logging system
+5. **Logger**: Comprehensive logging system with Telegram integration
 6. **Rate Limiter**: Smart handling of API rate limits
 
 ## Security
@@ -55,7 +56,6 @@ A high-performance, secure webhook API built on Cloudflare Workers for executing
 - API keys are stored securely in Cloudflare D1 database
 - Only the first 4 characters of API keys are logged for traceability
 - Keys are retrieved fresh for each request
-- Support for multiple API keys with different permissions
 
 ### Request Authentication
 - HMAC-SHA256 signature generation for OKX API requests
@@ -103,6 +103,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
+    "marginMode": "cross",
     "side": "buy",
     "qty": "50%"
   }'
@@ -116,6 +117,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USDT",
     "type": "spot",
+    "marginMode": "cross",
     "side": "sell",
     "qty": "75%"
   }'
@@ -161,7 +163,7 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "authToken": "YOUR_AUTH_TOKEN",
     "symbol": "BTC-USD-SWAP",
     "type": "perpetual",
-    "marginMode": "cross",
+    "marginMode": "isolated",
     "closePosition": true
   }'
 ```
@@ -235,63 +237,66 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 ## Configuration
 
 ### Environment Variables
-- `BROKER_TAG`: Tag for identifying trades
-- Database credentials (managed by Cloudflare)
+- `WEBHOOK_AUTH_TOKEN`: Authentication token for webhook requests
+- `BROKER_TAG`: Broker identification tag for OKX orders
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token for notifications
+- `TELEGRAM_CHANNEL_ID`: Target Telegram channel ID for notifications
 
-### Database Schema
-```sql
-CREATE TABLE api_keys (
-  api_key TEXT PRIMARY KEY,
-  secret_key TEXT NOT NULL,
-  passphrase TEXT NOT NULL,
-  exchange TEXT NOT NULL,
-  permissions TEXT NOT NULL
-);
+### Telegram Notifications
+The webhook API sends real-time notifications to Telegram for important events:
+
+#### Notification Types
+1. **Webhook Receipt**
+```
+📥 New Webhook
+Time: HH:MM:SS
+Request ID: xxx...
 ```
 
-## Environment Variables
-
-To set up the required environment variables, use the following wrangler commands:
-
-```bash
-# Set the webhook authentication token
-npx wrangler secret put WEBHOOK_AUTH_TOKEN --env production
-# Example: z8V%kewzQ%m%XKdMJGdWtbX8!V8ZKqHz
-
-# Set the broker tag (optional)
-npx wrangler secret put BROKER_TAG --env production
-# Example: default
+2. **Trade Execution**
+```
+📈 TRADE EXECUTION - BTC-USD-SWAP
+Time: HH:MM:SS
+Request ID: xxx...
+Action: BUY
+API Key: abcd...
+Exchange: OKX
 ```
 
-These environment variables are required for the webhook API to function properly:
-- `WEBHOOK_AUTH_TOKEN`: Used to authenticate incoming webhook requests
-- `BROKER_TAG`: Optional tag to identify the broker instance (defaults to 'default' if not set)
+3. **Trade Success**
+```
+✅ TRADE SUCCESS - BTC-USD-SWAP
+Time: HH:MM:SS
+Request ID: xxx...
+API Key: abcd...
+Exchange: OKX
+```
 
-## Rate Limiting
-- 60-second window
-- Maximum 20 requests per window
-- Implemented at the edge
+4. **Position Close**
+```
+📉 POSITION CLOSE - BTC-USD-SWAP
+Time: HH:MM:SS
+Request ID: xxx...
+API Key: abcd...
+Exchange: OKX
+```
 
-## Best Practices
+5. **Trade Errors**
+```
+❌ TRADE ERROR
+Time: HH:MM:SS
+Request ID: xxx...
+API Key: abcd...
+Error: Invalid order size
+Exchange: OKX
+```
 
-1. **Always verify your symbol format**
-   - Spot: Must end with "-USDT"
-   - Perpetual: Must end with "-USD-SWAP"
-
-2. **Use percentage-based sizing**
-   - More reliable than absolute sizes
-   - Automatically adjusts to available balance
-   - Use "100%" for maximum available
-
-3. **Check API Responses**
-   - Monitor the response status
-   - Check for error messages
-   - Verify trade execution details
-
-4. **Monitor Logs**
-   - Each request has a unique ID
-   - Logs are categorized by component
-   - Debug mode provides additional details
+#### Features
+- Real-time trade monitoring
+- Request ID tracking for debugging
+- Masked API keys for security
+- Clear status indicators with emojis
+- Grouped notifications for multi-account trades
 
 ## Detailed API Reference
 
@@ -433,7 +438,6 @@ If the token is missing or invalid, the API will return a 401 Unauthorized respo
 - API keys are stored securely in Cloudflare D1 database
 - Only the first 4 characters of API keys are logged for traceability
 - Keys are retrieved fresh for each request
-- Support for multiple API keys with different permissions
 
 ## Implementation Details
 
@@ -462,81 +466,6 @@ For perpetual futures:
 - All sizes are automatically rounded to the instrument's lot size
 - Zero or invalid sizes are rejected with appropriate error messages
 
-## Deployment
-
-### Prerequisites
-1. **Cloudflare Account**
-   - Workers subscription
-   - D1 database access
-   - API tokens with appropriate permissions
-
-2. **Environment Setup**
-   ```bash
-   # Install Wrangler CLI
-   npm install -g wrangler
-
-   # Login to Cloudflare
-   wrangler login
-   ```
-
-3. **Database Setup**
-   ```sql
-   -- Create API keys table
-   CREATE TABLE api_keys (
-     api_key TEXT PRIMARY KEY,
-     secret_key TEXT NOT NULL,
-     passphrase TEXT NOT NULL,
-     exchange TEXT NOT NULL,
-     permissions TEXT NOT NULL
-   );
-   ```
-
-### Configuration
-1. **wrangler.toml**
-   ```toml
-   name = "webhook-api"
-   main = "src/index.js"
-   compatibility_date = "2024-02-09"
-   ```
-
-2. **Environment Variables**
-   ```bash
-   # Set required secrets
-   wrangler secret put BROKER_TAG
-   ```
-
-### Deployment Steps
-```bash
-# Deploy to Cloudflare
-wrangler deploy
-
-# Tail logs
-wrangler tail
-```
-
-## Testing
-
-### Local Testing
-```bash
-# Start local development server
-wrangler dev
-
-# Test health check
-curl http://localhost:8787/
-
-# Test trade execution
-curl -X POST http://localhost:8787/ \
-  -H "Content-Type: application/json" \
-  -d '{"authToken":"YOUR_AUTH_TOKEN","symbol":"BTC-USDT","type":"spot","side":"buy","qty":"100%","marginMode":"cross"}'
-```
-
-### Production Testing
-Always test with small amounts first:
-1. Start with minimal spot trades
-2. Test percentage-based sizing
-3. Verify position management
-4. Monitor execution times
-
 ## Maintenance
 
 ### Monitoring
@@ -553,10 +482,11 @@ Always test with small amounts first:
 
 ### Troubleshooting
 1. **Common Issues**
-   - Invalid API credentials
-   - Insufficient balances
-   - Rate limiting
-   - Network timeouts
+   - Invalid API key or secret
+   - Network connectivity issues
+   - Rate limit exceeded
+   - Invalid request format
+   - Insufficient balance
 
 2. **Resolution Steps**
    - Check logs with request ID
