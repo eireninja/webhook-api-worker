@@ -28,8 +28,8 @@ function validatePayload(payload) {
   
   // Validate trade type
   const tradeType = payload.type.toLowerCase();
-  if (!['spot', 'perps', 'invperps', 'options', 'futures'].includes(tradeType)) {
-    throw new Error('Invalid type. Must be spot, perps, invperps, options, or futures');
+  if (!['spot', 'perps', 'invperps'].includes(tradeType)) {
+    throw new Error('Invalid type. Must be spot, perps, invperps');
   }
 
   // Validate symbol format
@@ -57,16 +57,8 @@ function validatePayload(payload) {
         throw new Error('Spot symbols must end with -USDT');
       }
       break;
-    case 'options':
-      if (!payload.symbol.endsWith('-USD-OPTIONS')) {
-        throw new Error('Options symbols must end with -USD-OPTIONS');
-      }
-      break;
-    case 'futures':
-      if (!payload.symbol.endsWith('-USD-FUTURES')) {
-        throw new Error('Futures symbols must end with -USD-FUTURES');
-      }
-      break;
+    default:
+      throw new Error('Invalid trade type. Must be invperps, perps, or spot');
   }
 
   // Validate margin mode
@@ -215,6 +207,7 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
 
   switch(type.toLowerCase()) {
     case 'perps':
+    case 'invperps':
       // Support all three types of perpetual futures
       switch(marginType.toUpperCase()) {
         case 'USDT':
@@ -225,12 +218,6 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
         default:
           return `${base}-USD-SWAP`;  // Default to crypto-margined
       }
-    case 'invperps':
-      return `${base}-USD-SWAP`;
-    case 'options':
-      return `${base}-USD-OPTIONS`;
-    case 'futures':
-      return `${base}-USD-FUTURES`;
     default: // spot and margin use USDT
       return `${base}-${quote}`;
   }
@@ -273,7 +260,18 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
     if (instId.endsWith('-SWAP')) {
       createLog('TRADE', 'Getting futures max size');
       const path = '/api/v5/account/max-size';
-      const queryParams = `?instId=${instId}&tdMode=${payload.marginMode}`;
+      
+      // Build query parameters based on margin mode
+      let queryParams = `?instId=${instId}&tdMode=${payload.marginMode}`;
+      
+      // For isolated margin on futures, we need posSide
+      if (payload.marginMode === 'isolated') {
+        const posSide = payload.side?.toLowerCase() === 'buy' ? 'long' : 'short';
+        queryParams += `&posSide=${posSide}`;
+        createLog('TRADE', `Using isolated margin with ${posSide} position`, requestId);
+      } else {
+        createLog('TRADE', 'Using cross margin', requestId);
+      }
 
       const { headers } = await generateOkxRequest(
         credentials.apiKey,
@@ -299,9 +297,9 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
 
       createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
 
-      // For inverse perpetuals (BTC-USD-SWAP), return the contract numbers directly
-      if (instId === 'BTC-USD-SWAP') {
-        createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+      // For inverse perpetuals (-USD-SWAP), return the contract numbers directly
+      if (instId.endsWith('-USD-SWAP')) {
+        createLog('API', `Processing inverse perpetual ${instId}`, requestId);
         
         // OKX returns the number of contracts directly for inverse swaps
         const maxBuy = result.maxBuy;
@@ -343,8 +341,8 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
     });
 
     const data = await response.json();
-    if (data.code !== '0') {
-      throw new Error(JSON.stringify(data));
+    if (data.code !== '0' || !data.data?.[0]) {
+      throw new Error('Failed to get account balance');
     }
 
     // Make sure we have valid numbers
@@ -479,10 +477,6 @@ async function executeTrade(payload, credentials, brokerTag, requestId, env) {
         return await executePerpsOrder(payload, credentials, brokerTag, requestId, env);
       case 'invperps':
         return await executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env);
-      case 'options':
-        return await executeOptionsOrder(payload, credentials, brokerTag, requestId, env);
-      case 'futures':
-        return await executeFuturesOrder(payload, credentials, brokerTag, requestId, env);
       default:
         throw new Error(`Unsupported trade type: ${payload.type}`);
     }
@@ -492,100 +486,222 @@ async function executeTrade(payload, credentials, brokerTag, requestId, env) {
   }
 }
 
-// Helper: Execute a spot trade
-async function executeSpotTrade(payload, credentials, brokerTag, requestId, env) {
-  // Validate credentials structure
-  if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-    createLog('API', 'Invalid credentials structure provided to executeSpotTrade', requestId);
-    throw new Error('Invalid credentials structure');
+// Helper: Fetch max size from OKX API
+async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
+  createLog('TRADE', 'Getting max size');
+  const path = '/api/v5/account/max-size';
+  let queryParams = `?instId=${instId}&tdMode=${tdMode}`;
+  
+  if (posSide) {
+    queryParams += `&posSide=${posSide}`;
+    createLog('TRADE', `Using ${tdMode} margin with ${posSide} position`, requestId);
   }
 
+  const { headers } = await generateOkxRequest(
+    credentials.apiKey,
+    credentials.secretKey,
+    credentials.passphrase,
+    'GET',
+    path + queryParams
+  );
+
+  createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+  const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
+  const data = await response.json();
+  
+  createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+  
+  if (data.code !== '0') {
+    throw new Error(JSON.stringify(data));
+  }
+
+  const maxBuy = data.data?.[0]?.maxBuy;
+  const maxSell = data.data?.[0]?.maxSell;
+  
+  if (!maxBuy || !maxSell) {
+    throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
+  }
+
+  createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy}, Sell=${maxSell}`, requestId);
+  return { maxBuy, maxSell };
+}
+
+// Helper: Execute a spot trade
+async function executeSpotTrade(payload, credentials, brokerTag, requestId, env) {
   try {
-    const data = {
-      instId: formatTradingPair(payload.symbol, 'spot'),
+    const instId = formatTradingPair(payload.symbol, 'spot');
+    
+    // Get instrument info for lot size first
+    createLog('TRADE', `Getting instrument info for ${instId}`);
+    const instInfo = await getInstrumentInfo(instId, credentials);
+    
+    if (!instInfo || !instInfo.lotSz) {
+      throw new Error(`Failed to get lot size for ${instId}`);
+    }
+
+    // Get max available size for spot
+    const { maxBuy, maxSell } = await fetchMaxSize(instId, 'cash', null, credentials, requestId);
+    
+    // Calculate order size based on side
+    const maxQty = payload.side.toLowerCase() === 'buy' ? maxBuy : maxSell;
+    let orderSize;
+    
+    if (payload.qty.includes('%')) {
+      orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
+    } else {
+      orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
+    }
+
+    // Validate final order size
+    if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
+      throw new Error(`Invalid order size: ${orderSize}`);
+    }
+
+    createLog('TRADE', `Executing ${payload.side} order for ${instId} with size ${orderSize}`);
+
+    // Prepare order data
+    const orderData = {
+      instId,
       tdMode: 'cash',
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag)
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      side: payload.side.toLowerCase(),
+      sz: orderSize,
+      tgtCcy: payload.side.toLowerCase() === 'buy' ? 'base_ccy' : 'quote_ccy'  // base_ccy (ETH) for buys, quote_ccy (USDT) for sells
     };
 
-    // Get instrument info for lot size
-    const instrumentInfo = await getInstrumentInfo(data.instId, credentials);
-    const lotSize = parseFloat(instrumentInfo.lotSz);
-    createLog('TRADE', `Lot size for ${data.instId}: ${lotSize}`, requestId, credentials.apiKey, env);
-
-    data.side = payload.side.toLowerCase();
-
-    // Handle percentage-based quantities
-    if (payload.qty.includes('%')) {
-      createLog('TRADE', `Getting max available size for ${payload.qty} trade`, requestId, credentials.apiKey, env);
-      const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId, payload);
-      
-      // For spot trades, we need to set tgtCcy
-      data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
-      
-      // Use availSell for sell orders, availBuy for buy orders
-      const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-      createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`, requestId, credentials.apiKey, env);
-      
-      if (!maxQty || maxQty === '0') {
-        throw new Error(`No available quantity for ${data.side} order`);
-      }
-
-      data.sz = calculateOrderSize(maxQty, payload.qty, lotSize);
-      createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`, requestId, credentials.apiKey, env);
-    } else {
-      // Direct size specification
-      data.sz = roundToLotSize(parseFloat(payload.qty), lotSize).toString();
-      data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
+    // Place order using batch orders
+    const result = await placeBatchOrders([orderData], credentials, requestId, env);
+    
+    // Process the result
+    if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
+      throw new Error(result.data?.[0]?.sMsg || 'Failed to place order');
     }
 
-    return await placeOrder(data, credentials, requestId, env);
+    return {
+      sz: orderSize
+    };
   } catch (error) {
     createLog('API', `Spot trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
     throw error;
   }
 }
 
-// Helper: Execute a USDT perpetual trade
+// Helper: Execute a perpetual trade
 async function executePerpsOrder(payload, credentials, brokerTag, requestId, env) {
   try {
+    const instId = formatTradingPair(payload.symbol, 'perps');
+    
+    // Get instrument info for lot size first
+    createLog('TRADE', `Getting instrument info for ${instId}`);
+    const instInfo = await getInstrumentInfo(instId, credentials);
+    
+    if (!instInfo || !instInfo.lotSz) {
+      throw new Error(`Failed to get lot size for ${instId}`);
+    }
+
+    if (payload.closePosition) {
+      // For closing positions, we need position details
+      const position = await getCurrentPosition(instId, credentials);
+      if (!position || !position.pos) {
+        throw new Error('No position found to close');
+      }
+
+      // Set side opposite to current position
+      const side = parseFloat(position.pos) > 0 ? 'sell' : 'buy';
+      // For USDT futures, use position's posSide
+      const posSide = position.posSide;
+      const orderSize = Math.abs(parseFloat(position.pos)).toString();
+
+      createLog('TRADE', `Closing ${posSide} position of ${orderSize} contracts with ${side}`, requestId);
+
+      // Set leverage (required by OKX)
+      await setLeverage({
+        instId: instId,
+        lever: payload.leverage.toString(),
+        mgnMode: payload.marginMode,
+        posSide: posSide
+      }, credentials, requestId, env);
+
+      // Prepare close order data
+      const orderData = {
+        instId: instId,
+        tdMode: payload.marginMode,
+        ordType: 'market',
+        tag: brokerTag,
+        clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+        posSide: posSide,
+        side: side,
+        sz: orderSize,
+        closePosition: true
+      };
+
+      // Place order using batch orders
+      const result = await placeBatchOrders([orderData], credentials, requestId, env);
+      
+      // Process the result
+      if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
+        throw new Error(result.data?.[0]?.sMsg || 'Failed to place order');
+      }
+
+      return {
+        sz: orderSize
+      };
+    }
+
     // Set leverage first
     await setLeverage({
-      instId: formatTradingPair(payload.symbol, 'perps'),
+      instId: instId,
       lever: payload.leverage.toString(),
       mgnMode: payload.marginMode,
-      posSide: 'long'
+      posSide: payload.side.toLowerCase() === 'buy' ? 'long' : 'short'
     }, credentials, requestId, env);
 
-    const data = {
-      instId: formatTradingPair(payload.symbol, 'perps'),
+    // Get max available size for perps
+    const posSide = payload.side?.toLowerCase() === 'buy' ? 'long' : 'short';
+    const { maxBuy, maxSell } = await fetchMaxSize(instId, payload.marginMode, posSide, credentials, requestId);
+    
+    // Calculate order size based on side
+    const maxQty = payload.side.toLowerCase() === 'buy' ? maxBuy : maxSell;
+    let orderSize;
+    
+    if (payload.qty.includes('%')) {
+      orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
+    } else {
+      orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
+    }
+
+    // Validate final order size
+    if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
+      throw new Error(`Invalid order size: ${orderSize}`);
+    }
+
+    createLog('TRADE', `Executing ${payload.side} order for ${instId} with size ${orderSize}`);
+
+    // Prepare order data
+    const orderData = {
+      instId,
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
       clOrdId: generateClOrdId(payload.strategyId, brokerTag),
-      posSide: 'long'
+      posSide: payload.side.toLowerCase() === 'buy' ? 'long' : 'short',
+      side: payload.side.toLowerCase(),
+      sz: orderSize
     };
 
-    if (payload.closePosition) {
-      const position = await getCurrentPosition(data.instId, credentials);
-      data.side = parseFloat(position.pos) > 0 ? 'sell' : 'buy';
-      data.sz = Math.abs(parseFloat(position.pos)).toString();
-    } else {
-      data.side = payload.side.toLowerCase();
-      const instrumentInfo = await getInstrumentInfo(data.instId, credentials);
-      const lotSize = parseFloat(instrumentInfo.lotSz);
-
-      if (payload.qty.includes('%')) {
-        const maxSize = await getMaxAvailSize(data.instId, credentials, requestId, payload);
-        const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-        data.sz = calculateOrderSize(maxQty, payload.qty, lotSize);
-      } else {
-        data.sz = roundToLotSize(parseFloat(payload.qty), lotSize).toString();
-      }
+    // Place order using batch orders
+    const result = await placeBatchOrders([orderData], credentials, requestId, env);
+    
+    // Process the result
+    if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
+      throw new Error(result.data?.[0]?.sMsg || 'Failed to place order');
     }
 
-    return await placeOrder(data, credentials, requestId, env);
+    return {
+      sz: orderSize
+    };
   } catch (error) {
     createLog('API', `USDT Perpetual trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
     throw error;
@@ -641,34 +757,33 @@ async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, 
         closePosition: true
       };
 
-      // Place the order
-      return await placeOrder(orderData, credentials, requestId, env);
+      // Place order using batch orders
+      const result = await placeBatchOrders([orderData], credentials, requestId, env);
+      
+      // Process the result
+      if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
+        throw new Error(result.data?.[0]?.sMsg || 'Failed to place order');
+      }
+
+      return {
+        sz: orderSize
+      };
     } else {
-      // For new positions, we need side and size
-      if (!payload.side) {
-        throw new Error('Side must be specified for new positions');
-      }
+      // Get max available size for inverse perps
+      const posSide = payload.side?.toLowerCase() === 'buy' ? 'long' : 'short';
+      const { maxBuy, maxSell } = await fetchMaxSize(instId, payload.marginMode, posSide, credentials, requestId);
 
-      // Get maximum available size
-      const maxSize = await getMaxAvailSize(instId, credentials, requestId, payload);
-      const maxQty = payload.side.toLowerCase() === 'buy' ? maxSize.availBuy : maxSize.availSell;
-
-      if (isNaN(parseFloat(maxQty)) || parseFloat(maxQty) <= 0) {
-        const error = `Invalid max quantity: ${maxQty}`;
-        console.error(`[ERROR][ReqID: ${requestId}] ${error}`);
-        throw new Error(error);
-      }
-
+      // Calculate order size based on side
+      const maxQty = payload.side.toLowerCase() === 'buy' ? maxBuy : maxSell;
       let orderSize;
-      if (payload.qty && payload.qty.includes('%')) {
+      
+      if (payload.qty.includes('%')) {
         orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
-      } else if (payload.qty) {
-        orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
       } else {
-        throw new Error('Quantity must be specified for non-close orders');
+        orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
       }
 
-      // Set leverage
+      // Set leverage (required by OKX)
       await setLeverage({
         instId: instId,
         lever: payload.leverage.toString(),
@@ -676,17 +791,12 @@ async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, 
         posSide: payload.side.toLowerCase() === 'buy' ? 'long' : 'short'
       }, credentials, requestId, env);
 
-      console.log(`[TRADE][ReqID: ${requestId}] Order details:
-  Side: ${payload.side}
-  Size: ${orderSize}
-  Lot Size: ${instInfo.lotSz}`);
-
       // Validate final order size
       if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
         throw new Error(`Invalid order size: ${orderSize}`);
       }
 
-      createLog('TRADE', `Executing ${payload.side} order for ${instId}`);
+      createLog('TRADE', `Executing ${payload.side} order for ${instId} with size ${orderSize}`);
       
       // Prepare order data
       const orderData = {
@@ -700,8 +810,17 @@ async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, 
         sz: orderSize
       };
 
-      // Place the order
-      return await placeOrder(orderData, credentials, requestId, env);
+      // Place order using batch orders
+      const result = await placeBatchOrders([orderData], credentials, requestId, env);
+      
+      // Process the result
+      if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
+        throw new Error(result.data?.[0]?.sMsg || 'Failed to place order');
+      }
+
+      return {
+        sz: orderSize
+      };
     }
   } catch (error) {
     createLog('API', `Inverse Perpetual trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
@@ -709,13 +828,17 @@ async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, 
   }
 }
 
-// Helper: Place an order with OKX
-async function placeOrder(data, credentials, requestId, env) {
-  createLog('TRADE', `Executing ${data.side} order for ${data.instId}`, requestId, credentials.apiKey, env);
-  createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`, requestId, credentials.apiKey, env);
+// Helper: Place batch orders with OKX
+async function placeBatchOrders(orders, credentials, requestId, env) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    throw new Error('Invalid orders array provided to placeBatchOrders');
+  }
 
-  const path = '/api/v5/trade/order';
-  const body = JSON.stringify(data);
+  createLog('TRADE', `Executing batch of ${orders.length} orders`, requestId, credentials.apiKey, env);
+  createLog('API', `Batch trade request:\n    Path: /api/v5/trade/batch-orders\n    Body: ${JSON.stringify(redactSensitiveData(orders))}`, requestId, credentials.apiKey, env);
+
+  const path = '/api/v5/trade/batch-orders';
+  const body = JSON.stringify(orders);
   const { headers } = await generateOkxRequest(
     credentials.apiKey,
     credentials.secretKey,
@@ -738,10 +861,12 @@ async function placeOrder(data, credentials, requestId, env) {
     throw new Error(`API Error: ${result.msg}`);
   }
 
-  // Return both result and order size for volume tracking
+  // Calculate total size from all orders
+  const totalSize = orders.reduce((sum, order) => sum + parseFloat(order.sz || 0), 0);
+
   return {
     ...result,
-    orderSize: data.sz
+    orderSize: totalSize.toString()
   };
 }
 
@@ -774,7 +899,7 @@ async function setLeverage(data, credentials, requestId, env) {
   }
 }
 
-// Helper: Execute trades for multiple accounts
+// Helper: Execute trades for multiple accounts using batch orders
 async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env) {
   // Always treat as multi-account if we have multiple API keys
   const isMultiAccount = apiKeys.length > 1;
@@ -795,46 +920,82 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
   // Execute trades in parallel for each instrument
   const allResults = await Promise.all(
     Object.entries(groupedKeys).map(async ([instId, keys]) => {
-      const chunkSize = 10;
+      // Process in chunks of 20 (OKX batch order limit)
+      const chunkSize = 20;
       const chunks = [];
       
-      // Split into chunks of 10 for rate limiting
       for (let i = 0; i < keys.length; i += chunkSize) {
         chunks.push(keys.slice(i, i + chunkSize));
       }
 
       const chunkResults = [];
       for (const chunk of chunks) {
-        const chunkPromises = chunk.map(async ({ api_key, secret_key, passphrase }) => {
-          try {
-            const result = await executeTrade(payload, {
-              apiKey: api_key,
-              secretKey: secret_key,
-              passphrase
-            }, brokerTag, requestId, env);
+        try {
+          // Create batch orders for the chunk
+          const batchOrders = (await Promise.all(chunk.map(async ({ api_key }) => {
+            try {
+              const orderData = await executeTrade(payload, {
+                apiKey: api_key,
+                secretKey: chunk.find(k => k.api_key === api_key).secret_key,
+                passphrase: chunk.find(k => k.api_key === api_key).passphrase
+              }, brokerTag, requestId, env);
 
-            // Extract volume from the order data
-            const volume = result.orderSize || '0';
-            return {
-              success: true,
-              accountId: api_key,
-              volume
-            };
-          } catch (error) {
-            return {
-              success: false,
-              accountId: api_key,
-              error: error.message,
-              volume: '0'
-            };
+              if (!orderData || !orderData.sz) {
+                createLog('ERROR', `Invalid order data returned for ${api_key}`, requestId);
+                return null;
+              }
+
+              return {
+                instId,
+                tdMode: payload.marginMode || 'cash',
+                clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+                side: payload.side.toLowerCase(),
+                ordType: payload.orderType || 'market',
+                sz: orderData.sz,
+                ...(payload.orderType === 'limit' && { px: payload.price }),
+                tag: brokerTag
+              };
+            } catch (error) {
+              createLog('ERROR', `Failed to create order for ${api_key}: ${error.message}`, requestId);
+              return null;
+            }
+          }))).filter(order => order !== null); // Remove any failed orders
+
+          if (batchOrders.length === 0) {
+            createLog('ERROR', 'No valid orders to execute', requestId);
+            continue;
           }
-        });
 
-        const results = await Promise.all(chunkPromises);
-        chunkResults.push(...results);
+          // Execute batch orders
+          const result = await placeBatchOrders(batchOrders, {
+            apiKey: chunk[0].api_key,
+            secretKey: chunk[0].secret_key,
+            passphrase: chunk[0].passphrase
+          }, requestId, env);
 
-        if (chunks.length > 1) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // Process results
+          const results = result.data.map((order, index) => ({
+            success: order.sCode === '0',
+            accountId: batchOrders[index].tag,
+            volume: batchOrders[index].sz,
+            error: order.sCode !== '0' ? order.sMsg : undefined
+          }));
+
+          chunkResults.push(...results);
+
+          // Add delay between chunks if necessary
+          if (chunks.length > 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        } catch (error) {
+          // If batch order fails, mark all orders in chunk as failed
+          const failedResults = chunk.map(({ api_key }) => ({
+            success: false,
+            accountId: api_key,
+            error: error.message,
+            volume: '0'
+          }));
+          chunkResults.push(...failedResults);
         }
       }
 
