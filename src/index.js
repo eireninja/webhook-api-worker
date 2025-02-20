@@ -13,6 +13,97 @@ const MAX_REQUESTS = 20;
 // Store IP addresses and their request counts (in-memory rate limiting)
 const ipRequests = new Map();
 
+// Helper: Validate webhook payload
+function validatePayload(payload) {
+  // Required fields for all requests
+  if (!payload.symbol) throw new Error('Symbol is required');
+  if (!payload.type) throw new Error('Type is required');
+  if (!payload.exchange) throw new Error('Exchange is required');
+  
+  // Validate exchange
+  const validExchanges = ['okx', 'bybit'];
+  if (!validExchanges.includes(payload.exchange.toLowerCase())) {
+    throw new Error(`Invalid exchange. Must be one of: ${validExchanges.join(', ')}`);
+  }
+  
+  // Validate trade type
+  const tradeType = payload.type.toLowerCase();
+  if (!['spot', 'perps', 'invperps', 'options', 'futures'].includes(tradeType)) {
+    throw new Error('Invalid type. Must be spot, perps, invperps, options, or futures');
+  }
+
+  // Validate symbol format
+  switch(tradeType) {
+    case 'invperps':
+      if (!payload.symbol.endsWith('-USD-SWAP')) {
+        throw new Error('Inverse perpetual symbols must end with -USD-SWAP');
+      }
+      // Always require leverage for perpetual futures
+      if (!payload.leverage) {
+        throw new Error('Leverage is required for perpetual futures');
+      }
+      break;
+    case 'perps':
+      if (!payload.symbol.endsWith('-USDT-SWAP') && !payload.symbol.endsWith('-USDC-SWAP')) {
+        throw new Error('USDT/USDC perpetual symbols must end with -USDT-SWAP or -USDC-SWAP');
+      }
+      // Always require leverage for perpetual futures
+      if (!payload.leverage) {
+        throw new Error('Leverage is required for perpetual futures');
+      }
+      break;
+    case 'spot':
+      if (!payload.symbol.endsWith('-USDT')) {
+        throw new Error('Spot symbols must end with -USDT');
+      }
+      break;
+    case 'options':
+      if (!payload.symbol.endsWith('-USD-OPTIONS')) {
+        throw new Error('Options symbols must end with -USD-OPTIONS');
+      }
+      break;
+    case 'futures':
+      if (!payload.symbol.endsWith('-USD-FUTURES')) {
+        throw new Error('Futures symbols must end with -USD-FUTURES');
+      }
+      break;
+  }
+
+  // Validate margin mode
+  if (tradeType !== 'spot' && payload.marginMode) {
+    const marginMode = payload.marginMode.toLowerCase();
+    if (!['cross', 'isolated'].includes(marginMode)) {
+      throw new Error('Invalid margin mode. Must be cross or isolated');
+    }
+  }
+
+  // For entry orders (closePosition is false or not set)
+  if (!payload.closePosition) {
+    if (!payload.side) throw new Error('Side is required for entry orders');
+    if (!payload.qty) throw new Error('Quantity is required for entry orders');
+    
+    // Validate side
+    const side = payload.side.toLowerCase();
+    if (!['buy', 'sell'].includes(side)) {
+      throw new Error('Invalid side. Must be buy or sell');
+    }
+
+    // Validate quantity format for percentage
+    if (payload.qty.includes('%')) {
+      const percentage = parseFloat(payload.qty);
+      if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
+        throw new Error('Invalid percentage. Must be between 0 and 100');
+      }
+    } else {
+      // Validate quantity format for absolute value
+      const quantity = parseFloat(payload.qty);
+      if (isNaN(quantity) || quantity <= 0) {
+        throw new Error('Invalid quantity. Must be a positive number');
+      }
+    }
+  }
+}
+
 // Helper: Format timestamp in OKX required format
 function getTimestamp() {
   const now = new Date();
@@ -85,63 +176,6 @@ async function generateOkxRequest(apiKey, secretKey, passphrase, method, path, b
   return { headers, timestamp };
 }
 
-// Helper: Validate webhook payload
-function validatePayload(payload) {
-  // Required fields for all requests
-  if (!payload.symbol) throw new Error('Symbol is required');
-  if (!payload.type) throw new Error('Type is required');
-  if (!payload.marginMode) throw new Error('Margin mode is required');
-  
-  // Validate symbol format
-  switch(payload.type.toLowerCase()) {
-    case 'perpetual':
-      if (!payload.symbol.endsWith('-USD-SWAP')) {
-        throw new Error('Perpetual symbols must end with -USD-SWAP');
-      }
-      break;
-    case 'spot':
-    case 'margin':
-      if (!payload.symbol.endsWith('-USDT')) {
-        throw new Error('Spot/Margin symbols must end with -USDT');
-      }
-      break;
-    default:
-      throw new Error('Invalid type. Must be perpetual, spot, or margin');
-  }
-
-  // Validate margin mode
-  const marginMode = payload.marginMode.toLowerCase();
-  if (!['cross', 'isolated'].includes(marginMode)) {
-    throw new Error('Invalid margin mode. Must be cross or isolated');
-  }
-
-  // For entry orders (closePosition is false or not set)
-  if (!payload.closePosition) {
-    if (!payload.side) throw new Error('Side is required for entry orders');
-    if (!payload.qty) throw new Error('Quantity is required for entry orders');
-    
-    // Validate side
-    const side = payload.side.toLowerCase();
-    if (!['buy', 'sell'].includes(side)) {
-      throw new Error('Invalid side. Must be buy or sell');
-    }
-
-    // Validate quantity format for percentage
-    if (payload.qty.includes('%')) {
-      const percentage = parseFloat(payload.qty);
-      if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
-        throw new Error('Invalid percentage. Must be between 0 and 100');
-      }
-    } else {
-      // Validate quantity format for absolute value
-      const quantity = parseFloat(payload.qty);
-      if (isNaN(quantity) || quantity <= 0) {
-        throw new Error('Invalid quantity. Must be a positive number');
-      }
-    }
-  }
-}
-
 // Helper: Generate a valid client order ID (clOrdId)
 function generateClOrdId(strategyId, brokerTag) {
   const timestamp = Date.now();
@@ -180,7 +214,7 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
   const quote = cleanSymbol.slice(-4);
 
   switch(type.toLowerCase()) {
-    case 'perpetual':
+    case 'perps':
       // Support all three types of perpetual futures
       switch(marginType.toUpperCase()) {
         case 'USDT':
@@ -191,45 +225,55 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
         default:
           return `${base}-USD-SWAP`;  // Default to crypto-margined
       }
+    case 'invperps':
+      return `${base}-USD-SWAP`;
+    case 'options':
+      return `${base}-USD-OPTIONS`;
+    case 'futures':
+      return `${base}-USD-FUTURES`;
     default: // spot and margin use USDT
       return `${base}-${quote}`;
   }
 }
 
 // Helper: Calculate order size based on balance and percentage
-function calculateOrderSize(balance, percentage, side, symbol) {
-  const percent = parseFloat(percentage);
-  if (isNaN(percent) || percent <= 0 || percent > 100) {
-    throw new Error('Invalid percentage');
+function calculateOrderSize(maxQty, requestedQty, lotSize) {
+  if (requestedQty === '100%') {
+    return roundToLotSize(parseFloat(maxQty), lotSize).toString();
   }
   
-  // Convert percentage to decimal
-  const fraction = percent / 100;
+  const percentage = parseFloat(requestedQty);
+  const fraction = percentage / 100;
+  const calculatedSize = parseFloat(maxQty) * fraction;
+  const roundedSize = roundToLotSize(calculatedSize, lotSize);
   
-  // Extract base/quote from symbol
-  const base = symbol.slice(0, -4);
-  const quote = symbol.slice(-4);
-  createLog('TRADE', `Calculating ${side} size for ${base}-${quote}`);
-  
-  if (side.toLowerCase() === 'buy') {
-    const quoteBalance = parseFloat(balance.data[0].details.find(d => d.ccy === quote)?.availBal || '0');
-    createLog('TRADE', `Available ${quote} balance: ${quoteBalance}`);
-    return (quoteBalance * fraction).toString();
-  } else {
-    const baseBalance = parseFloat(balance.data[0].details.find(d => d.ccy === base)?.availBal || '0');
-    createLog('TRADE', `Available ${base} balance: ${baseBalance}`);
-    return (baseBalance * fraction).toString();
+  if (roundedSize <= 0) {
+    throw new Error(`Invalid order size: ${roundedSize}. Max available: ${maxQty}`);
   }
+  
+  return roundedSize.toString();
 }
 
 // Helper: Get maximum available size for trading
-async function getMaxAvailSize(instId, credentials, requestId) {
+async function getMaxAvailSize(instId, credentials, requestId, payload) {
+  // Validate credentials structure
+  if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    createLog('API', 'Invalid credentials structure provided to getMaxAvailSize', requestId);
+    throw new Error('Invalid credentials structure');
+  }
+
+  // Validate margin mode
+  if (!payload || !payload.marginMode || !['cross', 'isolated'].includes(payload.marginMode)) {
+    createLog('API', `Invalid margin mode: ${payload?.marginMode}`, requestId);
+    throw new Error('Invalid margin mode. Must be either "cross" or "isolated"');
+  }
+
   try {
     // Different endpoint for perpetual futures
     if (instId.endsWith('-SWAP')) {
       createLog('TRADE', 'Getting futures max size');
       const path = '/api/v5/account/max-size';
-      const queryParams = `?instId=${instId}&tdMode=cross`;
+      const queryParams = `?instId=${instId}&tdMode=${payload.marginMode}`;
 
       const { headers } = await generateOkxRequest(
         credentials.apiKey,
@@ -253,7 +297,26 @@ async function getMaxAvailSize(instId, credentials, requestId) {
         throw new Error('Invalid max size response: ' + JSON.stringify(result));
       }
 
-      // Convert to same format as max-avail-size endpoint
+      createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+
+      // For inverse perpetuals (BTC-USD-SWAP), return the contract numbers directly
+      if (instId === 'BTC-USD-SWAP') {
+        createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+        
+        // OKX returns the number of contracts directly for inverse swaps
+        const maxBuy = result.maxBuy;
+        const maxSell = result.maxSell;
+        
+        createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy} contracts, Sell=${maxSell} contracts`, requestId);
+        
+        return {
+          availBuy: maxBuy,
+          availSell: maxSell,
+          instId
+        };
+      }
+
+      // For USDT perpetuals, return as is
       return {
         availBuy: result.maxBuy,
         availSell: result.maxSell,
@@ -280,11 +343,10 @@ async function getMaxAvailSize(instId, credentials, requestId) {
     });
 
     const data = await response.json();
-    
     if (data.code !== '0') {
       throw new Error(JSON.stringify(data));
     }
-    
+
     // Make sure we have valid numbers
     const result = data.data[0];
     if (!result.availBuy || !result.availSell) {
@@ -399,56 +461,52 @@ async function getCurrentPosition(instId, credentials) {
   }
 }
 
-// Helper: Execute a trade with OKX
+// Helper: Execute a trade with OKX (main router)
 async function executeTrade(payload, credentials, brokerTag, requestId, env) {
+  // Validate credentials structure
+  if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    createLog('API', 'Invalid credentials structure provided to executeTrade', requestId);
+    throw new Error('Invalid credentials structure');
+  }
+
   try {
-    // Set leverage first if specified for perpetual/margin
-    if (payload.leverage && (payload.type === 'perpetual' || payload.marginMode)) {
-      const leverageData = {
-        instId: formatTradingPair(payload.symbol, payload.type),
-        lever: payload.leverage.toString(),
-        mgnMode: payload.marginMode || 'cross', // Default to cross if not specified
-      };
-
-      // For perpetual futures
-      if (payload.type === 'perpetual') {
-        leverageData.posSide = payload.symbol.includes('-USD-') ? 
-          (payload.side === 'buy' ? 'long' : 'short') : 'net';
-      }
-
-      createLog('TRADE', `Setting leverage to ${payload.leverage}x for ${leverageData.instId}`, requestId, credentials.apiKey, env);
-      
-      const leveragePath = '/api/v5/account/set-leverage';
-      const leverageBody = JSON.stringify(leverageData);
-      const { headers: leverageHeaders } = await generateOkxRequest(
-        credentials.apiKey,
-        credentials.secretKey,
-        credentials.passphrase,
-        'POST',
-        leveragePath,
-        leverageBody
-      );
-
-      const leverageResponse = await fetch(`https://www.okx.com${leveragePath}`, {
-        method: 'POST',
-        headers: leverageHeaders,
-        body: leverageBody
-      });
-
-      const leverageResult = await leverageResponse.json();
-      createLog('API', `Leverage response: ${JSON.stringify(redactSensitiveData(leverageResult))}`, requestId, credentials.apiKey, env);
-
-      if (leverageResult.code !== '0') {
-        throw new Error(`Failed to set leverage: ${leverageResult.msg}`);
-      }
+    validatePayload(payload);
+    
+    switch(payload.type.toLowerCase()) {
+      case 'spot':
+        return await executeSpotTrade(payload, credentials, brokerTag, requestId, env);
+      case 'perps':
+        return await executePerpsOrder(payload, credentials, brokerTag, requestId, env);
+      case 'invperps':
+        return await executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env);
+      case 'options':
+        return await executeOptionsOrder(payload, credentials, brokerTag, requestId, env);
+      case 'futures':
+        return await executeFuturesOrder(payload, credentials, brokerTag, requestId, env);
+      default:
+        throw new Error(`Unsupported trade type: ${payload.type}`);
     }
+  } catch (error) {
+    createLog('API', `Trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
+    throw error;
+  }
+}
 
+// Helper: Execute a spot trade
+async function executeSpotTrade(payload, credentials, brokerTag, requestId, env) {
+  // Validate credentials structure
+  if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    createLog('API', 'Invalid credentials structure provided to executeSpotTrade', requestId);
+    throw new Error('Invalid credentials structure');
+  }
+
+  try {
     const data = {
-      instId: formatTradingPair(payload.symbol, payload.type),
-      tdMode: payload.type === 'spot' ? 'cash' : (payload.marginMode || 'cross'),
+      instId: formatTradingPair(payload.symbol, 'spot'),
+      tdMode: 'cash',
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: `${brokerTag}${Date.now()}`
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag)
     };
 
     // Get instrument info for lot size
@@ -456,139 +514,392 @@ async function executeTrade(payload, credentials, brokerTag, requestId, env) {
     const lotSize = parseFloat(instrumentInfo.lotSz);
     createLog('TRADE', `Lot size for ${data.instId}: ${lotSize}`, requestId, credentials.apiKey, env);
 
-    // Handle position closing for perpetual futures
-    if (payload.type === 'perpetual' && payload.closePosition === true) {
-      createLog('TRADE', 'Closing position - fetching current position size', requestId, credentials.apiKey, env);
-      const position = await getCurrentPosition(payload.symbol, credentials);
-      
-      // Set side opposite to current position
-      data.side = parseFloat(position.pos) > 0 ? 'sell' : 'buy';
-      data.closePosition = true;
-      
-      // Set size to current position size
-      data.sz = Math.abs(parseFloat(position.pos)).toString();
+    data.side = payload.side.toLowerCase();
 
-      // Set posSide based on position type
-      if (payload.symbol.includes('-USD-')) {
-        // For inverse futures, use the position's posSide
-        data.posSide = position.posSide;
-      } else {
-        // For USDT/USDC futures, use net
-        data.posSide = 'net';
-      }
+    // Handle percentage-based quantities
+    if (payload.qty.includes('%')) {
+      createLog('TRADE', `Getting max available size for ${payload.qty} trade`, requestId, credentials.apiKey, env);
+      const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId, payload);
       
-      createLog('TRADE', `Closing position of ${data.sz} contracts with ${data.side} and posSide ${data.posSide}`, requestId, credentials.apiKey, env);
+      // For spot trades, we need to set tgtCcy
+      data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
+      
+      // Use availSell for sell orders, availBuy for buy orders
+      const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
+      createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`, requestId, credentials.apiKey, env);
+      
+      if (!maxQty || maxQty === '0') {
+        throw new Error(`No available quantity for ${data.side} order`);
+      }
+
+      data.sz = calculateOrderSize(maxQty, payload.qty, lotSize);
+      createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`, requestId, credentials.apiKey, env);
     } else {
-      data.side = payload.side.toLowerCase();
-      
-      // Handle percentage-based quantities
-      if (payload.qty.includes('%')) {
-        createLog('TRADE', `Getting max available size for ${payload.qty} trade`, requestId, credentials.apiKey, env);
-        const maxSize = await getMaxAvailSize(payload.symbol, credentials, requestId);
-        createLog('TRADE', `Max size response: ${JSON.stringify(redactSensitiveData(maxSize))}`, requestId, credentials.apiKey, env);
-        
-        // For spot trades, we need to set tgtCcy first
-        if (payload.type === 'spot') {
-          // For sell orders in spot, use base currency (e.g., BTC)
-          // For buy orders in spot, use quote currency (e.g., USDT)
-          data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
-        }
-        
-        // Use availSell for sell orders, availBuy for buy orders
-        const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
-        createLog('TRADE', `Max quantity for ${data.side}: ${maxQty}`, requestId, credentials.apiKey, env);
-        
-        if (!maxQty || maxQty === '0') {
-          throw new Error(`No available quantity for ${data.side} order`);
-        }
-
-        if (payload.qty === '100%') {
-          // For 100%, use the max size directly but ensure it's rounded to lot size
-          const roundedSize = roundToLotSize(parseFloat(maxQty), lotSize);
-          data.sz = roundedSize.toString();
-        } else {
-          const percentage = parseFloat(payload.qty);
-          const fraction = percentage / 100;
-          const calculatedSize = parseFloat(maxQty) * fraction;
-          // Round to lot size
-          const roundedSize = roundToLotSize(calculatedSize, lotSize);
-          data.sz = roundedSize.toString();
-        }
-        
-        createLog('TRADE', `Setting size to ${data.sz} (${payload.qty} of ${maxQty})`, requestId, credentials.apiKey, env);
-
-        if (parseFloat(data.sz) <= 0) {
-          throw new Error(`Invalid order size: ${data.sz}. Max available: ${maxQty}`);
-        }
-      } else {
-        // Direct size specification - still need to round to lot size
-        const roundedSize = roundToLotSize(parseFloat(payload.qty), lotSize);
-        data.sz = roundedSize.toString();
-        
-        // For spot trades with direct size
-        if (payload.type === 'spot') {
-          data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
-        }
-      }
-
-      // For perpetual swaps, set posSide based on margin type
-      if (payload.type === 'perpetual') {
-        if (payload.symbol.includes('-USD-')) {
-          // For inverse futures, use long/short
-          data.posSide = data.side === 'buy' ? 'long' : 'short';
-        } else {
-          // For USDT/USDC futures, use net
-          data.posSide = 'net';
-        }
-      }
+      // Direct size specification
+      data.sz = roundToLotSize(parseFloat(payload.qty), lotSize).toString();
+      data.tgtCcy = data.side === 'buy' ? 'quote_ccy' : 'base_ccy';
     }
 
-    createLog('TRADE', `Executing ${data.side} order for ${data.instId}`, requestId, credentials.apiKey, env);
-    createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`, requestId, credentials.apiKey, env);
-
-    const path = '/api/v5/trade/order';
-    const body = JSON.stringify(data);
-    const { headers } = await generateOkxRequest(
-      credentials.apiKey,
-      credentials.secretKey,
-      credentials.passphrase,
-      'POST',
-      path,
-      body
-    );
-
-    const response = await fetch(`https://www.okx.com${path}`, {
-      method: 'POST',
-      headers,
-      body
-    });
-
-    const result = await response.json();
-    createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
-
-    if (result.code !== '0') {
-      throw new Error(`API Error: ${result.msg}`);
-    }
-
-    return result;
+    return await placeOrder(data, credentials, requestId, env);
   } catch (error) {
-    createLog('API', `Trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
+    createLog('API', `Spot trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
     throw error;
   }
 }
 
+// Helper: Execute a USDT perpetual trade
+async function executePerpsOrder(payload, credentials, brokerTag, requestId, env) {
+  try {
+    // Set leverage first
+    await setLeverage({
+      instId: formatTradingPair(payload.symbol, 'perps'),
+      lever: payload.leverage.toString(),
+      mgnMode: payload.marginMode,
+      posSide: 'long'
+    }, credentials, requestId, env);
+
+    const data = {
+      instId: formatTradingPair(payload.symbol, 'perps'),
+      tdMode: payload.marginMode,
+      ordType: 'market',
+      tag: brokerTag,
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      posSide: 'long'
+    };
+
+    if (payload.closePosition) {
+      const position = await getCurrentPosition(data.instId, credentials);
+      data.side = parseFloat(position.pos) > 0 ? 'sell' : 'buy';
+      data.sz = Math.abs(parseFloat(position.pos)).toString();
+    } else {
+      data.side = payload.side.toLowerCase();
+      const instrumentInfo = await getInstrumentInfo(data.instId, credentials);
+      const lotSize = parseFloat(instrumentInfo.lotSz);
+
+      if (payload.qty.includes('%')) {
+        const maxSize = await getMaxAvailSize(data.instId, credentials, requestId, payload);
+        const maxQty = data.side === 'sell' ? maxSize.availSell : maxSize.availBuy;
+        data.sz = calculateOrderSize(maxQty, payload.qty, lotSize);
+      } else {
+        data.sz = roundToLotSize(parseFloat(payload.qty), lotSize).toString();
+      }
+    }
+
+    return await placeOrder(data, credentials, requestId, env);
+  } catch (error) {
+    createLog('API', `USDT Perpetual trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
+    throw error;
+  }
+}
+
+// Helper: Execute an inverse perpetual trade
+async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env) {
+  try {
+    const instId = formatTradingPair(payload.symbol, 'invperps');
+    
+    // Get instrument info for lot size first
+    createLog('TRADE', `Getting instrument info for ${instId}`);
+    const instInfo = await getInstrumentInfo(instId, credentials);
+    
+    if (!instInfo || !instInfo.lotSz) {
+      throw new Error(`Failed to get lot size for ${instId}`);
+    }
+
+    if (payload.closePosition) {
+      // For closing positions, we need position details
+      const position = await getCurrentPosition(instId, credentials);
+      if (!position || !position.pos) {
+        throw new Error('No position found to close');
+      }
+
+      // Set side opposite to current position
+      const side = parseFloat(position.pos) > 0 ? 'sell' : 'buy';
+      // For inverse futures (BTC-USD-), use position's posSide
+      const posSide = position.posSide;
+      const orderSize = Math.abs(parseFloat(position.pos)).toString();
+
+      createLog('TRADE', `Closing ${posSide} position of ${orderSize} contracts with ${side}`, requestId);
+
+      // Set leverage (required by OKX)
+      await setLeverage({
+        instId: instId,
+        lever: payload.leverage.toString(),
+        mgnMode: payload.marginMode,
+        posSide: posSide
+      }, credentials, requestId, env);
+
+      // Prepare close order data
+      const orderData = {
+        instId: instId,
+        tdMode: payload.marginMode,
+        ordType: 'market',
+        tag: brokerTag,
+        clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+        posSide: posSide,
+        side: side,
+        sz: orderSize,
+        closePosition: true
+      };
+
+      // Place the order
+      return await placeOrder(orderData, credentials, requestId, env);
+    } else {
+      // For new positions, we need side and size
+      if (!payload.side) {
+        throw new Error('Side must be specified for new positions');
+      }
+
+      // Get maximum available size
+      const maxSize = await getMaxAvailSize(instId, credentials, requestId, payload);
+      const maxQty = payload.side.toLowerCase() === 'buy' ? maxSize.availBuy : maxSize.availSell;
+
+      if (isNaN(parseFloat(maxQty)) || parseFloat(maxQty) <= 0) {
+        const error = `Invalid max quantity: ${maxQty}`;
+        console.error(`[ERROR][ReqID: ${requestId}] ${error}`);
+        throw new Error(error);
+      }
+
+      let orderSize;
+      if (payload.qty && payload.qty.includes('%')) {
+        orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
+      } else if (payload.qty) {
+        orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
+      } else {
+        throw new Error('Quantity must be specified for non-close orders');
+      }
+
+      // Set leverage
+      await setLeverage({
+        instId: instId,
+        lever: payload.leverage.toString(),
+        mgnMode: payload.marginMode,
+        posSide: payload.side.toLowerCase() === 'buy' ? 'long' : 'short'
+      }, credentials, requestId, env);
+
+      console.log(`[TRADE][ReqID: ${requestId}] Order details:
+  Side: ${payload.side}
+  Size: ${orderSize}
+  Lot Size: ${instInfo.lotSz}`);
+
+      // Validate final order size
+      if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
+        throw new Error(`Invalid order size: ${orderSize}`);
+      }
+
+      createLog('TRADE', `Executing ${payload.side} order for ${instId}`);
+      
+      // Prepare order data
+      const orderData = {
+        instId: instId,
+        tdMode: payload.marginMode,
+        ordType: 'market',
+        tag: brokerTag,
+        clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+        posSide: payload.side.toLowerCase() === 'buy' ? 'long' : 'short',
+        side: payload.side.toLowerCase(),
+        sz: orderSize
+      };
+
+      // Place the order
+      return await placeOrder(orderData, credentials, requestId, env);
+    }
+  } catch (error) {
+    createLog('API', `Inverse Perpetual trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
+    throw error;
+  }
+}
+
+// Helper: Place an order with OKX
+async function placeOrder(data, credentials, requestId, env) {
+  createLog('TRADE', `Executing ${data.side} order for ${data.instId}`, requestId, credentials.apiKey, env);
+  createLog('API', `Trade request:\n    Path: /api/v5/trade/order\n    Body: ${JSON.stringify(redactSensitiveData(data))}`, requestId, credentials.apiKey, env);
+
+  const path = '/api/v5/trade/order';
+  const body = JSON.stringify(data);
+  const { headers } = await generateOkxRequest(
+    credentials.apiKey,
+    credentials.secretKey,
+    credentials.passphrase,
+    'POST',
+    path,
+    body
+  );
+
+  const response = await fetch(`https://www.okx.com${path}`, {
+    method: 'POST',
+    headers,
+    body
+  });
+
+  const result = await response.json();
+  createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
+
+  if (result.code !== '0') {
+    throw new Error(`API Error: ${result.msg}`);
+  }
+
+  // Return both result and order size for volume tracking
+  return {
+    ...result,
+    orderSize: data.sz
+  };
+}
+
+// Helper: Set leverage for futures trading
+async function setLeverage(data, credentials, requestId, env) {
+  createLog('TRADE', `Setting leverage to ${data.lever}x for ${data.instId}`, requestId, credentials.apiKey, env);
+  
+  const path = '/api/v5/account/set-leverage';
+  const body = JSON.stringify(data);
+  const { headers } = await generateOkxRequest(
+    credentials.apiKey,
+    credentials.secretKey,
+    credentials.passphrase,
+    'POST',
+    path,
+    body
+  );
+
+  const response = await fetch(`https://www.okx.com${path}`, {
+    method: 'POST',
+    headers,
+    body
+  });
+
+  const result = await response.json();
+  createLog('API', `Leverage response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
+
+  if (result.code !== '0') {
+    throw new Error(`Failed to set leverage: ${result.msg}`);
+  }
+}
+
+// Helper: Execute trades for multiple accounts
+async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env) {
+  // Always treat as multi-account if we have multiple API keys
+  const isMultiAccount = apiKeys.length > 1;
+  const apiKeysList = apiKeys.map(k => k.api_key).join(',');
+
+  // Send initial message
+  await sendTelegramMessage('REQUEST', `Executing ${payload.side} order for ${payload.symbol}`, 
+    requestId, apiKeysList, isMultiAccount, apiKeys.length, null, payload);
+
+  // Group API keys by instrument to respect rate limits
+  const groupedKeys = {};
+  apiKeys.forEach(key => {
+    const instId = formatTradingPair(payload.symbol, payload.type);
+    if (!groupedKeys[instId]) groupedKeys[instId] = [];
+    groupedKeys[instId].push(key);
+  });
+
+  // Execute trades in parallel for each instrument
+  const allResults = await Promise.all(
+    Object.entries(groupedKeys).map(async ([instId, keys]) => {
+      const chunkSize = 10;
+      const chunks = [];
+      
+      // Split into chunks of 10 for rate limiting
+      for (let i = 0; i < keys.length; i += chunkSize) {
+        chunks.push(keys.slice(i, i + chunkSize));
+      }
+
+      const chunkResults = [];
+      for (const chunk of chunks) {
+        const chunkPromises = chunk.map(async ({ api_key, secret_key, passphrase }) => {
+          try {
+            const result = await executeTrade(payload, {
+              apiKey: api_key,
+              secretKey: secret_key,
+              passphrase
+            }, brokerTag, requestId, env);
+
+            // Extract volume from the order data
+            const volume = result.orderSize || '0';
+            return {
+              success: true,
+              accountId: api_key,
+              volume
+            };
+          } catch (error) {
+            return {
+              success: false,
+              accountId: api_key,
+              error: error.message,
+              volume: '0'
+            };
+          }
+        });
+
+        const results = await Promise.all(chunkPromises);
+        chunkResults.push(...results);
+
+        if (chunks.length > 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      return chunkResults;
+    })
+  );
+
+  // Process results
+  if (!Array.isArray(allResults)) {
+    throw new Error('Invalid results from trade execution');
+  }
+  
+  const results = allResults.flat();
+  const successful = results.filter(r => r && r.success);
+  const failed = results.filter(r => r && !r.success);
+  
+  // Calculate total volume (sum of all successful trades)
+  const totalVolume = successful
+    .reduce((sum, r) => sum + parseFloat(r.volume || 0), 0)
+    .toFixed(8);
+
+  // Send consolidated success/failure message
+  const status = `Completed: ${successful.length} successful, ${failed.length} failed`;
+  createLog('TRADE', status, requestId, null, env);
+
+  // Send success message if any trades succeeded
+  if (successful.length > 0) {
+    await sendTelegramMessage('SUCCESS', status, requestId, null, 
+      isMultiAccount, apiKeys.length, totalVolume, payload);
+  }
+
+  // Send error message if any trades failed
+  if (failed.length > 0) {
+    const failedAccounts = failed.map(f => ({
+      accountId: mask(f.accountId),
+      error: f.error
+    }));
+    await sendTelegramMessage('ERROR', status, requestId, null,
+      isMultiAccount, apiKeys.length, null, payload, failedAccounts);
+  }
+
+  return results;
+}
+
 // Helper: Get API keys from database
-async function getApiKeys(env, requestId) {
-  createLog('DB', 'Fetching API keys from database', requestId, null, env);
+async function getApiKeys(env, requestId, exchange) {
+  if (!exchange) {
+    createLog('DB', 'No exchange provided to getApiKeys', requestId, null, env);
+    throw new Error('Exchange parameter is required');
+  }
+
+  // Normalize exchange name to uppercase
+  const normalizedExchange = exchange.toUpperCase();
+  createLog('DB', `Fetching API keys for ${normalizedExchange} from database`, requestId, null, env);
   
   try {
     const stmt = await env.DB.prepare(
       'SELECT api_key, secret_key, passphrase FROM api_keys WHERE exchange = ?'
-    ).bind('OKX')
+    ).bind(normalizedExchange)
     .all();
     
     if (!stmt.results || stmt.results.length === 0) {
-      throw new Error('No trading API keys found for OKX');
+      const error = `No trading API keys found for ${normalizedExchange}`;
+      createLog('DB', error, requestId, null, env);
+      throw new Error(error);
     }
     
     // Debug log (first 4 chars only)
@@ -598,8 +909,11 @@ async function getApiKeys(env, requestId) {
     
     return stmt.results;
   } catch (error) {
-    createLog('DB', `Database error: ${error.message}`, requestId, null, env);
-    throw new Error('Failed to retrieve API keys');
+    const errorMsg = error.message.includes('No trading API keys') 
+      ? error.message 
+      : `Database error while fetching ${normalizedExchange} keys: ${error.message}`;
+    createLog('DB', errorMsg, requestId, null, env);
+    throw new Error(errorMsg);
   }
 }
 
@@ -623,63 +937,140 @@ async function createLog(type, message, requestId = '', accountId = '', env = nu
 }
 
 // Helper: Format telegram message
-function formatTelegramMessage(type, message, requestId, accountId) {
+function formatTelegramMessage(type, message, requestId, accountId, isMultiAccount = false, totalAccounts = 1, volume = null, payload = null, failedAccounts = []) {
   const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-  const account = accountId ? `API Key: ${mask(accountId)}` : '';
   const reqId = `Request ID: ${requestId ? requestId.substring(0, 8) : ''}`;
 
+  // Define message type icons
+  const icons = {
+    WEBHOOK: '📥',
+    TRADE_OPEN: '📈',
+    TRADE_CLOSE: '📉',
+    ERROR: '❌',
+    SUCCESS: '✅'
+  };
+
+  // Get symbol and action from payload
+  const symbol = payload?.symbol || 'UNKNOWN';
+  const action = payload?.side?.toUpperCase() || 'UNKNOWN';
+
+  // Helper to format the title with icon
+  const formatTitle = (text, messageType) => `${icons[messageType]} WEBHOOK-API: ${text}`;
+
   switch(type) {
-    case 'REQUEST':
+    case 'REQUEST': {
+      const tradeType = isMultiAccount ? 'MULTI-ACCOUNT TRADE' : 'TRADE EXECUTION';
+      let accountInfo;
+      
+      if (isMultiAccount && accountId) {
+        const accounts = accountId.split(',');
+        accountInfo = `\n\nProcessing trades for ${accounts.length} accounts:`;
+        accounts.forEach((id, idx) => {
+          accountInfo += `\n${idx + 1}. API Key: ${mask(id)}`;
+        });
+      } else {
+        accountInfo = '\n\nProcessing trade for 1 account...';
+      }
+
+      const message = [
+        `${tradeType} - ${symbol}`,
+        `Time: ${timestamp}`,
+        reqId,
+        `Action: ${action}`,
+        `Exchange: OKX`,
+        accountInfo
+      ].join('\n');
+
       return {
         type: 'WEBHOOK',
-        message: `New Webhook\nTime: ${timestamp}\n${reqId}`
+        message: formatTitle(message, 'TRADE_OPEN')
       };
+    }
       
-    case 'TRADE':
-      if (message.includes('Executing')) {
-        const match = message.match(/Executing (buy|sell) order for (.+)/);
-        if (match) {
-          const [_, side, symbol] = match;
-          return {
-            type: 'TRADE_OPEN',
-            message: `TRADE EXECUTION - ${symbol}\nTime: ${timestamp}\n${reqId}\nAction: ${side.toUpperCase()}\n${account}\nExchange: OKX`
-          };
+    case 'API': {
+      if (message.includes('Response:')) {
+        const successTitle = isMultiAccount ? 'TRADE SUMMARY' : 'TRADE SUCCESS';
+        const messageLines = [
+          `${successTitle} - ${symbol}`,
+          `Time: ${timestamp}`,
+          reqId,
+          '',
+          'Execution Results:'
+        ];
+
+        if (isMultiAccount) {
+          const failedCount = failedAccounts?.length || 0;
+          const successCount = totalAccounts - failedCount;
+          messageLines.push(`• Total Accounts: ${totalAccounts}`);
+          messageLines.push(`• Successful: ${successCount}`);
+          if (failedCount > 0) {
+            messageLines.push(`• Failed: ${failedCount}`);
+          }
         }
-      }
-      if (message.includes('Closing position')) {
-        const match = message.match(/Closing position of .+ contracts with (sell|buy)/);
-        if (match) {
-          return {
-            type: 'TRADE_CLOSE',
-            message: `POSITION CLOSE - BTC-USD-SWAP\nTime: ${timestamp}\n${reqId}\n${account}\nExchange: OKX`
-          };
+
+        if (volume && volume !== '0' && volume !== '0.00000000') {
+          const baseAsset = symbol.split('-')[0];
+          messageLines.push(`• ${isMultiAccount ? 'Total Volume' : 'Trade Volume'}: ${volume} ${baseAsset}`);
         }
-      }
-      break;
-      
-    case 'API':
-      if (message.includes('Response:') && message.includes('ordId')) {
+
+        const duration = calculateDuration(timestamp);
+        messageLines.push(`• Duration: ${duration} ${duration === 1 ? 'second' : 'seconds'}`);
+
         return {
           type: 'SUCCESS',
-          message: `TRADE SUCCESS - BTC-USD-SWAP\nTime: ${timestamp}\n${reqId}\n${account}\nExchange: OKX`
-        };
-      }
-      if (message.includes('failed:')) {
-        return {
-          type: 'ERROR',
-          message: `TRADE ERROR\nTime: ${timestamp}\n${reqId}\n${account}\nError: ${message.split('failed:')[1].trim()}\nExchange: OKX`
+          message: formatTitle(messageLines.join('\n'), 'SUCCESS')
         };
       }
       break;
+    }
       
-    case 'ERROR':
+    case 'ERROR': {
+      const errorTitle = isMultiAccount ? 'TRADE ERRORS' : 'TRADE ERROR';
+      const messageLines = [
+        `${errorTitle} - ${symbol}`,
+        `Time: ${timestamp}`,
+        reqId,
+        ''
+      ];
+
+      if (isMultiAccount && failedAccounts?.length > 0) {
+        messageLines.push(`Failed Accounts (${failedAccounts.length}):`);
+        failedAccounts.forEach((fa, index) => {
+          messageLines.push(`${index + 1}. ${fa.accountId} (Error: ${fa.error})`);
+        });
+
+        // Group errors by type
+        const errorTypes = {};
+        failedAccounts.forEach(fa => {
+          errorTypes[fa.error] = (errorTypes[fa.error] || 0) + 1;
+        });
+
+        messageLines.push('\nError Analysis:');
+        Object.entries(errorTypes).forEach(([error, count]) => {
+          messageLines.push(`• ${error}: ${count}`);
+        });
+      } else {
+        messageLines.push(`Failed Account:\n• API Key: ${mask(accountId)}\nError: ${message}`);
+      }
+
+      messageLines.push('Exchange: OKX');
+
       return {
         type: 'ERROR',
-        message: `TRADE ERROR\nTime: ${timestamp}\n${reqId}\n${account}\nError: ${message}\nExchange: OKX`
+        message: formatTitle(messageLines.join('\n'), 'ERROR')
       };
+    }
   }
-  
+
   return null;
+}
+
+// Helper: Calculate duration in seconds between given timestamp and now
+function calculateDuration(startTime) {
+  const start = new Date();
+  start.setHours(startTime.split(':')[0], startTime.split(':')[1], startTime.split(':')[2]);
+  const now = new Date();
+  return Math.max(1, Math.round((now - start) / 1000));
 }
 
 // Helper: Send message to Telegram
@@ -687,22 +1078,12 @@ async function sendTelegramMessage(type, message, env) {
   try {
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHANNEL_ID) return;
   
-    const icons = {
-      WEBHOOK: '📥',
-      TRADE_OPEN: '📈',
-      TRADE_CLOSE: '📉',
-      ERROR: '❌',
-      SUCCESS: '✅'
-    };
-
-    const formattedMessage = `${icons[type] || '📌'} ${message}`;
-    
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: env.TELEGRAM_CHANNEL_ID,
-        text: formattedMessage,
+        text: message,
         parse_mode: 'Markdown'
       })
     });
@@ -725,77 +1106,6 @@ function shouldNotifyTelegram(type, message) {
     default:
       return false;
   }
-}
-
-// Helper: Execute trades for multiple accounts
-async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env) {
-  createLog('TRADE', `Starting parallel execution for ${apiKeys.length} accounts`, requestId, null, env);
-
-  // Group API keys by instrument to respect rate limits
-  const groupedKeys = {};
-  for (const key of apiKeys) {
-    const instId = formatTradingPair(payload.symbol, payload.type);
-    if (!groupedKeys[instId]) {
-      groupedKeys[instId] = [];
-    }
-    groupedKeys[instId].push(key);
-  }
-
-  // Execute trades in parallel for each instrument, respecting rate limits
-  const allResults = await Promise.all(
-    Object.entries(groupedKeys).map(async ([instId, keys]) => {
-      // Split keys into chunks of 10 to stay well within the 1000/2s limit
-      const chunkSize = 10;
-      const chunks = [];
-      for (let i = 0; i < keys.length; i += chunkSize) {
-        chunks.push(keys.slice(i, i + chunkSize));
-      }
-
-      // Process each chunk with a small delay to respect rate limits
-      const chunkResults = [];
-      for (const chunk of chunks) {
-        const chunkPromises = chunk.map(({ api_key, secret_key, passphrase }) => {
-          const credentials = {
-            apiKey: api_key,
-            secretKey: secret_key,
-            passphrase
-          };
-
-          return executeTrade(payload, credentials, brokerTag, requestId, env)
-            .then(result => ({
-              success: true,
-              accountId: mask(api_key),
-              status: 'success',
-              ...result
-            }))
-            .catch(error => ({
-              success: false,
-              accountId: mask(api_key),
-              status: 'rejected',
-              error: error.message
-            }));
-        });
-
-        // Execute chunk in parallel
-        const results = await Promise.all(chunkPromises);
-        chunkResults.push(...results);
-
-        // Add small delay between chunks to respect rate limits
-        if (chunks.length > 1) {
-          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
-        }
-      }
-
-      return chunkResults;
-    })
-  );
-
-  // Flatten results and separate successful and failed trades
-  const results = allResults.flat();
-  return {
-    successful: results.filter(r => r.success),
-    failed: results.filter(r => !r.success)
-  };
 }
 
 // Helper: Mask sensitive strings
@@ -868,14 +1178,21 @@ router.post('/', async (request, env) => {
     validatePayload(payload);
 
     // Get API keys from database
-    const apiKeys = await getApiKeys(env, requestId);
+    const apiKeys = await getApiKeys(env, requestId, payload.exchange);
     createLog('TRADE', `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
     
+    // Select broker tag based on exchange
+    const brokerTag = payload.exchange.toLowerCase() === 'okx' ? 
+      env.BROKER_TAG_OKX : 
+      payload.exchange.toLowerCase() === 'bybit' ? 
+        env.BROKER_TAG_BYBIT : 
+        'default';
+
     // Execute trades for all accounts
     const results = await executeMultiAccountTrades(
       payload, 
       apiKeys, 
-      env.BROKER_TAG || 'default',
+      brokerTag,
       requestId,
       env
     );
@@ -902,8 +1219,9 @@ router.post('/', async (request, env) => {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
-
   } catch (error) {
+    createLog('ERROR', `Error: ${error.message}`, requestId, null, env);
+    
     // Add specific handling for auth errors
     if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
       return new Response(JSON.stringify({
@@ -916,8 +1234,6 @@ router.post('/', async (request, env) => {
       });
     }
     
-    createLog('ERROR', `Error: ${error.message}\nStack: ${error.stack}`, requestId, null, env);
-    
     return new Response(JSON.stringify({
       error: error.message,
       requestId: requestId,
@@ -929,6 +1245,22 @@ router.post('/', async (request, env) => {
     });
   }
 });
+
+// Helper: Get exchange credentials
+function getExchangeCredentials(exchange, env) {
+  const exchangeKey = exchange.toUpperCase();
+  const credentials = {
+    apiKey: env[`${exchangeKey}_API_KEY`],
+    secretKey: env[`${exchangeKey}_SECRET_KEY`],
+    passphrase: env[`${exchangeKey}_PASSPHRASE`]
+  };
+  
+  if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    throw new Error(`Missing API credentials for ${exchange}`);
+  }
+  
+  return credentials;
+}
 
 // Catch-all handler for other methods
 router.all('*', () => new Response('Method not allowed', { status: 405 }));
