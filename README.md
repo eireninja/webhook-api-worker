@@ -1,18 +1,65 @@
 # OKX Trading Webhook API
 
-A high-performance, secure webhook API built on Cloudflare Workers for executing trades. This service accepts webhook requests and executes trades across multiple accounts simultaneously, supporting spot trading, USDT perpetual futures, and inverse perpetual futures trading.
+## Overview
+
+The OKX Trading Webhook API is a high-performance, secure service built on Cloudflare Workers. It facilitates automated trading by processing webhook requests to execute trades across multiple accounts on the OKX exchange. The API supports spot trading, USDT perpetual futures, and inverse perpetual futures, with robust error handling and logging capabilities.
 
 ## Features
 
-- **Multi-Account Support**: Execute trades across multiple accounts simultaneously
-- **Trade Types**: Support for spot trading, USDT perpetuals, and inverse perpetuals
-- **Position Management**: Open and close positions with percentage-based sizing
-- **Leverage Control**: Set custom leverage for perpetual futures trading
-- **Market Orders**: Quick execution with market orders
-- **Secure**: Built-in security features and API key management
-- **Logging**: Comprehensive logging with Telegram notifications for real-time monitoring
-- **Rate Limiting**: Smart handling of OKX API rate limits for parallel execution
-- **Percentage-Based Trading**: Trade with exact percentages of your available balance
+- **Multi-Account Support**: Execute trades across multiple accounts simultaneously.
+- **Trade Types**: Supports spot trading, USDT perpetuals, and inverse perpetuals.
+- **Position Management**: Open and close positions with percentage-based sizing.
+- **Leverage Control**: Set custom leverage for perpetual futures trading.
+- **Market Orders**: Quick execution with market orders.
+- **Security**: Built-in security features and API key management.
+- **Logging**: Comprehensive logging with Telegram notifications for real-time monitoring.
+- **Rate Limiting**: Smart handling of OKX API rate limits for parallel execution.
+- **Percentage-Based Trading**: Trade with exact percentages of your available balance.
+
+## Architecture
+
+### Codebase Structure
+
+- **JavaScript**: Main language used for the API logic and execution.
+- **Python**: Utilized for additional scripting and integration tasks.
+- **Cloudflare Workers**: Serverless environment for deploying the API.
+- **Wrangler**: Tool for building and deploying Cloudflare Workers.
+
+### Key Modules and Functions
+
+- **Payload Validation**: Ensures that incoming webhook requests contain all necessary fields and adhere to expected formats.
+- **Trade Execution**: Manages the logic for executing trades, including opening and closing positions for different trade types.
+- **Request Generation**: Handles the creation of signed requests for the OKX API, ensuring secure communication.
+- **Batch Order Placement**: Facilitates the submission of multiple orders in a single API call for efficiency.
+
+### Configuration
+
+- **wrangler.toml**: Defines environment-specific settings for production and development, including database and KV namespace bindings.
+- **package.json**: Specifies dependencies and scripts for building, developing, and deploying the API.
+
+## Webhook Flow
+
+1. **Incoming Webhook Request**: Received from external systems, containing trade details such as symbol, type, quantity, and side.
+2. **Payload Validation**: Validates the request payload to ensure all required fields are present and correctly formatted.
+3. **Order Processing**: Transforms the validated payload into a batch order for the OKX API, calculating order sizes based on available resources.
+4. **API Interaction**: Sends the batch order to OKX, handling responses and logging outcomes.
+5. **Position Management**: Manages open and close operations for positions, ensuring accurate execution and reporting.
+
+## Error Handling and Logging
+
+- **Validation Errors**: Caught early in the process, with detailed messages logged and sent via Telegram if configured.
+- **Trading Errors**: Includes checks for insufficient balance, invalid lot sizes, and leverage restrictions.
+- **API Errors**: Handles rate limits, authentication issues, and network errors, with comprehensive logging for all events.
+
+## Environment Variables
+
+- **Authentication**: `WEBHOOK_AUTH_TOKEN` for webhook authentication.
+- **Telegram Logging**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHANNEL_ID` for notifications.
+- **Broker Tags**: `BROKER_TAG_OKX` for order tracking.
+
+## Conclusion
+
+The OKX Trading Webhook API provides a robust, scalable solution for automated trading on the OKX platform. Its modular architecture, comprehensive error handling, and multi-account support make it an ideal choice for traders looking to automate their strategies efficiently.
 
 ## Trade Types and Sizing
 
@@ -67,7 +114,8 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "symbol": "BTC-USDT",
     "type": "spot",
     "side": "buy",
-    "qty": "50%"
+    "qty": "50%",
+    "exchange": "okx"
   }'
 ```
 
@@ -82,7 +130,8 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "side": "buy",
     "qty": "75%",
     "marginMode": "cross",
-    "leverage": "10"
+    "leverage": "10",
+    "exchange": "okx"
   }'
 ```
 
@@ -97,8 +146,56 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
     "qty": "100%",
     "side": "buy",
     "marginMode": "cross",
+    "leverage": "1",
+    "exchange": "okx"
+  }'
+```
+
+## Close Position Examples
+
+### 1. Inverse Perpetual Close (BTC-USD-SWAP)
+```bash
+curl -X POST https://webhook.quantmarketintelligence.com/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
+    "symbol": "BTC-USD-SWAP",
+    "type": "invperps",
+    "marginMode": "isolated",
+    "closePosition": true,
+    "exchange": "okx",
     "leverage": "1"
   }'
+```
+
+### 2. USDT Perpetual Close (ETH-USDT-SWAP)
+```bash
+curl -X POST https://webhook.quantmarketintelligence.com/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authToken": "YOUR_AUTH_TOKEN",
+    "symbol": "ETH-USDT-SWAP",
+    "type": "perps",
+    "marginMode": "cross",
+    "closePosition": true,
+    "exchange": "okx",
+    "leverage": "1"
+  }'
+```
+
+### 3. Spot Sell (BTC-USDT)
+```bash
+curl -X POST "https://webhook.quantmarketintelligence.com/" \
+-H "Content-Type: application/json" \
+-d '{
+  "authToken": "YOUR_AUTH_TOKEN",
+  "type": "spot",
+  "marginMode": "cross",
+  "symbol": "BTC-USDT",
+  "exchange": "okx",
+  "side": "sell",
+  "qty": "100%"
+}'
 ```
 
 ## Required Parameters
@@ -112,71 +209,8 @@ curl -X POST https://webhook.quantmarketintelligence.com/ \
 | side        | Trade side: "buy" or "sell"                          | Yes**    |
 | marginMode  | For futures: "cross" or "isolated"                    | Yes***   |
 | leverage    | For futures: leverage value ("1" to "125")           | Yes***   |
+| exchange    | Exchange name (e.g., "okx")                           | Yes      |
 
 \* Not required if closePosition=true
 \** Not required if closePosition=true
 \*** Only required for perpetual futures trades
-
-## Error Handling
-
-The API implements thorough error handling with detailed logging:
-
-1. **Input Validation**
-   - Parameter validation
-   - Symbol format checking
-   - Quantity validation
-   - Leverage limits
-
-2. **Trading Errors**
-   - Insufficient balance
-   - Invalid lot sizes
-   - Position size limits
-   - Leverage restrictions
-
-3. **API Errors**
-   - Rate limits
-   - Authentication issues
-   - Network errors
-
-All errors are logged and sent via Telegram notifications if configured.
-
-## Environment Variables
-
-Required environment variables:
-
-1. **Authentication**
-   - `WEBHOOK_AUTH_TOKEN`: For webhook authentication
-
-2. **Telegram Logging**
-   - `TELEGRAM_BOT_TOKEN`: Telegram bot token
-   - `TELEGRAM_CHANNEL_ID`: Channel for notifications
-
-3. **Broker Tags**
-   - `BROKER_TAG_OKX`: OKX broker tag for order tracking
-
-## Implementation Details
-
-### Position Size Calculation
-
-1. **Spot Trading**
-   - Gets max available size in base/quote currency
-   - Rounds to instrument's lot size
-   - Validates against minimum trade size
-
-2. **USDT Perpetuals**
-   - Gets max contracts available
-   - Applies leverage
-   - Rounds to contract lot size
-
-3. **Inverse Perpetuals**
-   - Gets max contracts directly from API
-   - No additional conversion needed
-   - Validates against minimum contract size
-
-### Order Generation
-
-All orders are market orders with:
-- Unique client order IDs (clOrdId)
-- Broker tags for tracking
-- Position side management for futures
-- Automatic lot size rounding
