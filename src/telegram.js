@@ -37,15 +37,7 @@ function formatTradeMessage({
   pnl = null,
   closePosition = false
 }) {
-  // Debug input parameters
-  console.log('[TG Debug] Input params:', {
-    symbol, side, closePosition,
-    totalAccounts, successCount,
-    hasErrors: errors.length > 0
-  });
-
   if (!symbol || !side || !requestId) {
-    console.log('[TG Debug] Missing required params');
     return null;
   }
   
@@ -57,20 +49,11 @@ function formatTradeMessage({
   // Determine message type based on errors and closePosition flag
   let type = errors.length > 0 ? 'ERROR' : 'SUCCESS';
   
-  // Debug close position logic
-  console.log('[TG Debug] Close position check:', {
-    closePosition,
-    side: side.toUpperCase(),
-    isClose: closePosition || side.toUpperCase() === 'CLOSE' || 
-            (side.toUpperCase() === 'SELL' && closePosition)
-  });
-
   // Check for closing position: either explicit CLOSE or sell with closePosition flag
   if (!errors.length && (closePosition || side.toUpperCase() === 'CLOSE' || 
       (side.toUpperCase() === 'SELL' && closePosition))) {
     type = 'CLOSE';
     side = 'CLOSE';
-    console.log('[TG Debug] Setting message type to CLOSE');
   }
   
   const icon = ICONS[type];

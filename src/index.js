@@ -1481,7 +1481,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       'Total Accounts': apiKeys.length,
       'Successful Orders': totalSuccessful,
       'Failed Orders': totalFailed,
-      'Total Size': totalSize.toString(),
+      'Total Size': totalSize.toFixed(8),
       Type: payload.type.toUpperCase(),
       Symbol: payload.symbol
     };
@@ -1498,12 +1498,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       sz: totalSize.toFixed(8)
     };
 
-    await createTradeExecutionSummary(result, payload.symbol, requestId);
-
     // Send Telegram notification
     try {
-      createLog('INFO', `[TG Debug] Sending ${totalSuccessful === apiKeys.length ? 'success' : 'error'} notification for ${payload.symbol}`, requestId);
-      
       const telegramMsg = formatTradeMessage({
         symbol: payload.symbol,
         side: payload.closePosition ? 'CLOSE' : (payload.side || 'SELL'), // Set side explicitly for close positions
@@ -1517,11 +1513,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       });
 
       if (telegramMsg) {
-        const sent = await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
-        createLog('INFO', `[TG Debug] Notification sent: ${sent}`, requestId);
+        await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
     } catch (error) {
-      createLog('ERROR', `[TG Debug] Failed to send notification: ${error.message}`, requestId);
+      createLog('ERROR', `Failed to send notification: ${error.message}`, requestId);
     }
 
     return result;
@@ -1532,12 +1527,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       sz: totalSize.toFixed(8)
     };
 
-    await createTradeExecutionSummary(result, payload.symbol, requestId);
-
     // Send Telegram notification for error
     try {
-      createLog('INFO', `[TG Debug] Sending error notification for ${payload.symbol}`, requestId);
-      
       const telegramMsg = formatTradeMessage({
         symbol: payload.symbol,
         side: payload.closePosition ? 'CLOSE' : (payload.side || 'SELL'), // Set side explicitly for close positions
@@ -1550,11 +1541,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       });
 
       if (telegramMsg) {
-        const sent = await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
-        createLog('INFO', `[TG Debug] Error notification sent: ${sent}`, requestId);
+        await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
     } catch (telegramError) {
-      createLog('ERROR', `[TG Debug] Failed to send error notification: ${telegramError.message}`, requestId);
+      createLog('ERROR', `Failed to send error notification: ${telegramError.message}`, requestId);
     }
 
     return result;
@@ -1807,40 +1797,6 @@ async function createLog(level, message, requestId, apiKey = '', env = null) {
     console.log(`[${timestamp}][${level}]${reqIdStr}${accountStr} ${formattedMessage}`);
   } catch (error) {
     console.error(`Logging error: ${error.message}`);
-  }
-}
-
-/**
- * Creates a summary of trade execution results
- * @param {Object} result - Execution result containing successful count, failed count, and size
- * @param {string} symbol - Trading symbol
- * @param {string} requestId - Request identifier
- */
-async function createTradeExecutionSummary(result, symbol, requestId) {
-  try {
-    const status = result.successful === result.successful + result.failed ? 'Complete' :
-                  result.successful > 0 ? 'Partial Success' : 
-                  'Failed';
-    
-    const summary = {
-      'Total Accounts': result.successful + result.failed,
-      'Successful Orders': result.successful,
-      'Failed Orders': result.failed,
-      'Total Size': result.sz,
-      Type: symbol.split('-')[1].toUpperCase(),
-      Symbol: symbol
-    };
-
-    await createLog(LOG_LEVEL.TRADE, formatTradeLogMessage(
-      'MULTI_ACCOUNT',
-      'Trade Summary',
-      summary
-    ), requestId);
-  } catch (error) {
-    await createLog(LOG_LEVEL.ERROR, 
-      `Failed to create trade summary: ${error.message}`, 
-      requestId
-    );
   }
 }
 

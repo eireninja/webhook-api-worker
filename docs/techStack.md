@@ -7,11 +7,19 @@
   - Runtime: V8 JavaScript engine
   - Edge deployment for low latency
   - Workers KV for data storage
+  - Efficient request handling
 
 ### Build System
 - **Webpack** (v5.98.0)
   - Production mode optimization
   - Minimal configuration
+  - Known Issues:
+    - Async/await compatibility needs configuration
+    - Module parsing for async functions
+  - Required Updates:
+    - Add appropriate loader for async/await
+    - Configure mode explicitly
+    - Fix module parsing issues
 - **Wrangler** (v3.107.3)
   - Cloudflare Workers CLI tool
   - Local development support
@@ -23,11 +31,13 @@
 - Used for API key storage
 - SQL-based queries
 - Integrated with Cloudflare Workers
+- Secure credential storage
 
 ### KV Storage
 - AUTH_STORAGE_PROD namespace
 - Used for authentication tokens
 - Fast, edge-replicated storage
+- Efficient token validation
 
 ## External APIs
 
@@ -38,11 +48,16 @@
   - Spot trading
   - Regular perpetual futures
   - Inverse perpetual futures
+- Individual order execution
+- Proper error handling
 
 ### Telegram Integration
 - Webhook-based notifications
 - Error reporting
 - Trade execution updates
+- Clean message formatting
+- Account ID masking
+- Non-redundant notifications
 
 ## Development Tools
 
@@ -54,6 +69,7 @@
 - Local development environment
 - Webhook testing tools
 - Manual integration testing
+- Regular functionality verification
 
 ## Security
 
@@ -61,10 +77,12 @@
 - Token-based webhook authentication
 - HMAC signature validation
 - API key encryption
+- Account ID masking in logs
 
 ### Rate Limiting
 - Basic implementation
 - Future enhancement planned
+- Per-account consideration
 
 ## Architectural Decisions
 
@@ -73,14 +91,18 @@
 - Low latency execution
 - Built-in KV and D1 database support
 - Cost-effective scaling
+- Efficient request handling
 
-### Why Webpack?
-- Efficient bundling
-- Tree shaking
-- Modern JavaScript support
-- Small output bundle size
+### Why Individual Order Execution?
+- Better error tracking
+- Cleaner logging
+- Improved accountability
+- More reliable execution
+- Easier debugging
 
 ### Future Considerations
 - WebSocket implementation
 - Enhanced rate limiting
 - Additional exchange support
+- Advanced parallel execution
+- Performance optimization
