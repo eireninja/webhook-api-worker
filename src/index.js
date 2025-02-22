@@ -1,19 +1,30 @@
+/**
+ * @fileoverview Webhook API Worker for handling trading operations across multiple exchanges
+ * This module provides endpoints and utilities for executing trades, managing positions,
+ * and handling webhook requests for cryptocurrency trading operations.
+ */
+
 import { Router } from 'itty-router';
+
+//=============================================================================
+// [INIT] Initialization and Constants
+//=============================================================================
 
 const router = Router();
 const OKX_API_URL = 'https://www.okx.com';  
 
-// Global debug flag: set to true to include full error details (if needed)
-const DEBUG = false;
+//=============================================================================
+// [VALIDATION] Input Validation Functions
+//=============================================================================
 
-// Rate limit window in seconds and max requests per window
-const RATE_LIMIT_WINDOW = 60;
-const MAX_REQUESTS = 20;
-
-// Store IP addresses and their request counts (in-memory rate limiting)
-const ipRequests = new Map();
-
-// Helper: Validate webhook payload
+/**
+ * Validates the webhook payload for required fields and correct values
+ * @param {Object} payload - The webhook payload to validate
+ * @param {string} payload.symbol - Trading symbol (e.g., 'BTC-USDT')
+ * @param {string} payload.type - Trade type ('spot', 'perps', or 'invperps')
+ * @param {string} payload.exchange - Exchange name ('okx' or 'bybit')
+ * @throws {Error} If any required field is missing or invalid
+ */
 function validatePayload(payload) {
   // Required fields for all requests
   if (!payload.symbol) throw new Error('Symbol is required');
@@ -69,41 +80,92 @@ function validatePayload(payload) {
     }
   }
 
-  // For entry orders (closePosition is false or not set)
-  if (!payload.closePosition) {
-    if (!payload.side) throw new Error('Side is required for entry orders');
-    if (!payload.qty) throw new Error('Quantity is required for entry orders');
-    
-    // Validate side
-    const side = payload.side.toLowerCase();
-    if (!['buy', 'sell'].includes(side)) {
-      throw new Error('Invalid side. Must be buy or sell');
-    }
+  // Validate side
+  if (!payload.closePosition && !payload.side) {
+    throw new Error('Side is required for entry orders');
+  }
+  if (payload.side && !['buy', 'sell'].includes(payload.side.toLowerCase())) {
+    throw new Error('Invalid side. Must be buy or sell');
+  }
 
-    // Validate quantity format for percentage
-    if (payload.qty.includes('%')) {
-      const percentage = parseFloat(payload.qty);
-      if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
-        throw new Error('Invalid percentage. Must be between 0 and 100');
-      }
-    } else {
-      // Validate quantity format for absolute value
-      const quantity = parseFloat(payload.qty);
-      if (isNaN(quantity) || quantity <= 0) {
-        throw new Error('Invalid quantity. Must be a positive number');
-      }
+  // Validate quantity format for percentage
+  if (payload.qty && payload.qty.includes('%')) {
+    const percentage = parseFloat(payload.qty);
+    if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
+      throw new Error('Invalid percentage. Must be between 0 and 100');
+    }
+  } else if (payload.qty) {
+    // Validate quantity format for absolute value
+    const quantity = parseFloat(payload.qty);
+    if (isNaN(quantity) || quantity <= 0) {
+      throw new Error('Invalid quantity. Must be a positive number');
     }
   }
 }
 
-// Helper: Format timestamp in OKX required format
+/**
+ * Validates broker tag format and content
+ * @param {string} tag - Broker tag to validate
+ * @throws {Error} If tag format is invalid
+ * @returns {boolean} True if tag is valid
+ */
+function validateBrokerTag(tag) {
+  if (!tag || typeof tag !== 'string' || tag.length === 0) {
+    throw new Error('BROKER_TAG environment variable is required');
+  }
+
+  if (!/^[a-zA-Z0-9_-]{8,32}$/.test(tag)) {
+    throw new Error('Invalid broker tag format: use 8-32 characters (letters, numbers, underscore, hyphen)');
+  }
+}
+
+/**
+ * Validates authentication token from the request
+ * @param {Object} payload - Request payload containing the token
+ * @param {Object} env - Environment variables containing auth settings
+ * @throws {Error} If token is invalid or missing
+ * @returns {boolean} True if token is valid
+ */
+function validateAuthToken(payload, env) {
+  if (!env?.WEBHOOK_AUTH_TOKEN) {
+    throw new Error('Server configuration error: missing authentication token');
+  }
+
+  const { authToken } = payload;
+  if (!authToken) {
+    throw new Error('Missing authentication token');
+  }
+
+  // Constant-time comparison to prevent timing attacks
+  if (authToken !== env.WEBHOOK_AUTH_TOKEN) {
+    createLog('AUTH', 'Authentication failed', '', '');
+    throw new Error('Invalid authentication token');
+  }
+}
+
+//=============================================================================
+// [UTILS] Utility Functions
+//=============================================================================
+
+/**
+ * Generates ISO timestamp in OKX required format
+ * @returns {string} Formatted timestamp string
+ */
 function getTimestamp() {
   const now = new Date();
   const isoString = now.toISOString();
   return isoString.slice(0, -5) + 'Z';  
 }
 
-// Helper: Generate HMAC-SHA256 signature
+/**
+ * Generates HMAC-SHA256 signature for API authentication
+ * @param {string} timestamp - Current timestamp
+ * @param {string} method - HTTP method
+ * @param {string} requestPath - API endpoint path
+ * @param {string} body - Request body
+ * @param {string} secretKey - API secret key
+ * @returns {string} Generated signature
+ */
 async function sign(timestamp, method, requestPath, body, secretKey) {
   // Handle empty body same as Python
   const processedBody = body === '{}' || !body ? '' : body;
@@ -138,47 +200,28 @@ async function sign(timestamp, method, requestPath, body, secretKey) {
   return signatureBase64;
 }
 
-// Helper: Generate common OKX request headers and signature
-async function generateOkxRequest(apiKey, secretKey, passphrase, method, path, body = '') {
-  const timestamp = new Date().toISOString().split('.')[0] + 'Z';
-  createLog('AUTH', `Generating request with API key: ${mask(apiKey)}`);
-  
-  // Always include /api/v5 in signature path
-  const signaturePath = path.startsWith('/api/v5') ? path : `/api/v5${path}`;
-  
-  // Generate signature using stringified body
-  const signature = await sign(timestamp, method.toUpperCase(), signaturePath, body, secretKey);
-  
-  // Order headers exactly as in Python implementation
-  const headers = {
-    'Content-Type': 'application/json',
-    'OK-ACCESS-KEY': apiKey,
-    'OK-ACCESS-SIGN': signature,
-    'OK-ACCESS-TIMESTAMP': timestamp,
-    'OK-ACCESS-PASSPHRASE': passphrase
-  };
-
-  createLog('AUTH', `Request details:
-    Timestamp: ${timestamp}
-    Method: ${method.toUpperCase()}
-    Path: ${signaturePath}
-    Body: ${body || ''}`
-  );
-  
-  return { headers, timestamp };
-}
-
-// Helper: Generate a valid client order ID (clOrdId)
-function generateClOrdId(strategyId, brokerTag) {
-  const timestamp = Date.now();
+/**
+ * Generates a valid client order ID (clOrdId)
+ * @param {string} strategyId - Strategy identifier
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} [batchIndex=''] - Optional batch index for batch orders
+ * @returns {string} Generated client order ID
+ */
+function generateClOrdId(strategyId, brokerTag, batchIndex = '') {
+  const timestamp = Date.now().toString().slice(-6); // Use last 6 digits of timestamp
   const sanitizedStrategy = (strategyId || 'default')
     .replace(/[^a-zA-Z0-9]/g, '')
-    .substring(0, 10);
+    .substring(0, 6); // Shorter strategy ID
   createLog('TRADE', 'Generating clOrdId');
-  return `${brokerTag}${sanitizedStrategy}${timestamp}`.substring(0, 32);
+  // Ensure total length is under 32 chars
+  return `${brokerTag}${sanitizedStrategy}${timestamp}${batchIndex}`.substring(0, 32);
 }
 
-// Helper: Parse trading pair into base and quote currencies
+/**
+ * Parses trading pair into base and quote currencies
+ * @param {string} symbol - Trading pair symbol (e.g., 'BTC-USDT')
+ * @returns {Object} Object containing base and quote currencies
+ */
 function parseTradingPair(symbol) {
   // Remove .P suffix for perpetual futures
   const cleanSymbol = symbol.replace('.P', '');
@@ -193,7 +236,13 @@ function parseTradingPair(symbol) {
   };
 }
 
-// Helper: Format trading pair based on type
+/**
+ * Formats trading pair based on trade type and margin type
+ * @param {string} symbol - Trading pair symbol
+ * @param {string} type - Trade type ('spot', 'perps', 'invperps')
+ * @param {string} marginType - Margin type, defaults to 'USD'
+ * @returns {string} Formatted trading pair
+ */
 function formatTradingPair(symbol, type, marginType = 'USD') {
   // For perpetual futures, keep the original format if it already has -SWAP
   if (symbol.endsWith('-SWAP')) {
@@ -223,7 +272,25 @@ function formatTradingPair(symbol, type, marginType = 'USD') {
   }
 }
 
-// Helper: Calculate order size based on balance and percentage
+/**
+ * Rounds size to specified lot size
+ * @param {number} size - Original size
+ * @param {number} lotSize - Minimum lot size
+ * @returns {number} Size rounded to lot size
+ */
+function roundToLotSize(size, lotSize) {
+  const precision = -Math.log10(lotSize);
+  const multiplier = Math.pow(10, precision);
+  return Math.floor(size * multiplier) / multiplier;
+}
+
+/**
+ * Calculates order size based on balance and percentage
+ * @param {number} maxQty - Maximum available quantity
+ * @param {string} requestedQty - Requested quantity
+ * @param {number} lotSize - Lot size for trading pair
+ * @returns {string} Calculated order size
+ */
 function calculateOrderSize(maxQty, requestedQty, lotSize) {
   if (requestedQty === '100%') {
     return roundToLotSize(parseFloat(maxQty), lotSize).toString();
@@ -241,7 +308,109 @@ function calculateOrderSize(maxQty, requestedQty, lotSize) {
   return roundedSize.toString();
 }
 
-// Helper: Get maximum available size for trading
+/**
+ * Masks sensitive data in strings
+ * @param {string} value - String to mask
+ * @param {number} visible - Number of visible characters
+ * @returns {string} Masked string
+ */
+function mask(value, visible = 4) {
+  if (!value) return '';
+  return value.substring(0, visible) + '...';
+}
+
+/**
+ * Redacts sensitive data from objects
+ * @param {Object} obj - Object containing sensitive data
+ * @returns {Object} Object with sensitive data redacted
+ */
+function redactSensitiveData(obj) {
+  if (!obj) return obj;
+  
+  const copy = { ...obj };
+  if (copy.authToken) {
+    copy.authToken = copy.authToken.substring(0, 4) + '***';
+  }
+  return copy;
+}
+
+/**
+ * Retrieves and validates exchange credentials from environment variables.
+ * 
+ * @param {string} exchange - The name of the exchange (e.g., 'okx', 'binance').
+ * @param {Object} env - The environment object containing API credentials.
+ * @returns {Object} An object containing the API key, secret key, and passphrase.
+ * @throws {Error} If any of the required credentials are missing.
+ * 
+ * @example
+ * const credentials = getExchangeCredentials('okx', process.env);
+ * // Returns: { apiKey: '...', secretKey: '...', passphrase: '...' }
+ */
+function getExchangeCredentials(exchange, env) {
+  const exchangeKey = exchange.toUpperCase();
+  const credentials = {
+    apiKey: env[`${exchangeKey}_API_KEY`],
+    secretKey: env[`${exchangeKey}_SECRET_KEY`],
+    passphrase: env[`${exchangeKey}_PASSPHRASE`]
+  };
+  
+  if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    throw new Error(`Missing API credentials for ${exchange}`);
+  }
+  
+  return credentials;
+}
+
+//=============================================================================
+// [OKX] OKX API Integration Functions
+//=============================================================================
+
+/**
+ * Generates common OKX request headers and signature
+ * @param {string} method - HTTP method
+ * @param {string} path - API endpoint path
+ * @param {Object} body - Request body
+ * @param {Object} credentials - API credentials
+ * @returns {Object} Headers and signed request body
+ */
+async function generateOkxRequest(method, path, body, credentials) {
+  const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+  createLog('AUTH', `Generating request with API key: ${mask(credentials.apiKey)}`);
+  
+  // Always include /api/v5 in signature path
+  const signaturePath = path.startsWith('/api/v5') ? path : `/api/v5${path}`;
+  
+  // Generate signature using stringified body
+  const signature = await sign(timestamp, method.toUpperCase(), signaturePath, body, credentials.secretKey);
+  
+  // Order headers exactly as in Python implementation
+  const headers = {
+    'Content-Type': 'application/json',
+    'OK-ACCESS-KEY': credentials.apiKey,
+    'OK-ACCESS-SIGN': signature,
+    'OK-ACCESS-TIMESTAMP': timestamp,
+    'OK-ACCESS-PASSPHRASE': credentials.passphrase
+  };
+
+  const authLog = formatAuthLogMessage(method, path, {
+    Method: method,
+    Path: path,
+    Timestamp: timestamp,
+    ...JSON.parse(body || '{}')
+  });
+  createLog('AUTH', authLog);
+  
+  return { headers, timestamp };
+}
+
+/**
+ * Gets maximum available size for trading
+ * @param {string} instId - Instrument ID
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
+ * @param {Object} payload - Trade payload
+ * @returns {Promise<number>} Maximum available size
+ */
 async function getMaxAvailSize(instId, credentials, requestId, payload) {
   // Validate credentials structure
   if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
@@ -274,11 +443,10 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
       }
 
       const { headers } = await generateOkxRequest(
-        credentials.apiKey,
-        credentials.secretKey,
-        credentials.passphrase,
         'GET',
-        path + queryParams
+        path + queryParams,
+        '',
+        credentials
       );
 
       createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
@@ -327,11 +495,10 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
     const queryParams = `?instId=${instId}&tdMode=cash`;
     
     const { headers } = await generateOkxRequest(
-      credentials.apiKey,
-      credentials.secretKey,
-      credentials.passphrase,
       'GET',
-      path + queryParams
+      path + queryParams,
+      '',
+      credentials
     );
 
     createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
@@ -358,16 +525,20 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
   }
 }
 
-// Helper: Get account balance
+/**
+ * Gets account balance information
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
+ * @returns {Promise<Object>} Account balance details
+ */
 async function getAccountBalance(credentials, requestId) {
   try {
     const path = '/api/v5/account/balance';
     const { headers } = await generateOkxRequest(
-      credentials.apiKey,
-      credentials.secretKey,
-      credentials.passphrase,
       'GET',
-      path
+      path,
+      '',
+      credentials
     );
 
     createLog('API', `Making request to: https://www.okx.com${path}`);
@@ -393,7 +564,12 @@ async function getAccountBalance(credentials, requestId) {
   }
 }
 
-// Helper: Get instrument information
+/**
+ * Gets instrument information
+ * @param {string} instId - Instrument ID
+ * @param {Object} credentials - API credentials
+ * @returns {Promise<Object>} Instrument details
+ */
 async function getInstrumentInfo(instId, credentials) {
   // Removed duplicate logging here to prevent duplicate log entries.
   const path = '/api/v5/public/instruments';
@@ -414,23 +590,20 @@ async function getInstrumentInfo(instId, credentials) {
   }
 }
 
-// Helper: Round size to lot size
-function roundToLotSize(size, lotSize) {
-  const precision = -Math.log10(lotSize);
-  const multiplier = Math.pow(10, precision);
-  return Math.floor(size * multiplier) / multiplier;
-}
-
-// Helper: Get current position
+/**
+ * Gets current position information
+ * @param {string} instId - Instrument ID
+ * @param {Object} credentials - API credentials
+ * @returns {Promise<Object>} Position details
+ */
 async function getCurrentPosition(instId, credentials) {
   try {
     const path = '/api/v5/account/positions';
     const { headers } = await generateOkxRequest(
-      credentials.apiKey,
-      credentials.secretKey,
-      credentials.passphrase,
       'GET',
-      path
+      path,
+      '',
+      credentials
     );
 
     createLog('API', `Making request to: https://www.okx.com${path}`);
@@ -458,7 +631,66 @@ async function getCurrentPosition(instId, credentials) {
   }
 }
 
-// Helper: Execute a trade with OKX (main router)
+/**
+ * Fetches maximum size from OKX API
+ * @param {string} instId - Instrument ID
+ * @param {string} tdMode - Trading mode
+ * @param {string} posSide - Position side
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
+ * @returns {Promise<Object>} Maximum size information
+ */
+async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
+  createLog('TRADE', 'Getting max size');
+  const path = '/api/v5/account/max-size';
+  let queryParams = `?instId=${instId}&tdMode=${tdMode}`;
+  
+  if (posSide) {
+    queryParams += `&posSide=${posSide}`;
+    createLog('TRADE', `Using ${tdMode} margin with ${posSide} position`, requestId);
+  }
+
+  const { headers } = await generateOkxRequest(
+    'GET',
+    path + queryParams,
+    '',
+    credentials
+  );
+
+  createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+  const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
+  const data = await response.json();
+  
+  createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+  
+  if (data.code !== '0') {
+    throw new Error(JSON.stringify(data));
+  }
+
+  const maxBuy = data.data?.[0]?.maxBuy;
+  const maxSell = data.data?.[0]?.maxSell;
+  
+  if (!maxBuy || !maxSell) {
+    throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
+  }
+
+  createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy} contracts, Sell=${maxSell} contracts`, requestId);
+  return { maxBuy, maxSell };
+}
+
+//=============================================================================
+// [TRADE] Trade Execution Functions
+//=============================================================================
+
+/**
+ * Main trade execution router
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Object>} Trade execution response
+ */
 async function executeTrade(payload, credentials, brokerTag, requestId, env) {
   // Validate credentials structure
   if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
@@ -489,48 +721,17 @@ async function executeTrade(payload, credentials, brokerTag, requestId, env) {
   }
 }
 
-// Helper: Fetch max size from OKX API
-async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
-  createLog('TRADE', 'Getting max size');
-  const path = '/api/v5/account/max-size';
-  let queryParams = `?instId=${instId}&tdMode=${tdMode}`;
-  
-  if (posSide) {
-    queryParams += `&posSide=${posSide}`;
-    createLog('TRADE', `Using ${tdMode} margin with ${posSide} position`, requestId);
-  }
-
-  const { headers } = await generateOkxRequest(
-    credentials.apiKey,
-    credentials.secretKey,
-    credentials.passphrase,
-    'GET',
-    path + queryParams
-  );
-
-  createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
-  const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
-  const data = await response.json();
-  
-  createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
-  
-  if (data.code !== '0') {
-    throw new Error(JSON.stringify(data));
-  }
-
-  const maxBuy = data.data?.[0]?.maxBuy;
-  const maxSell = data.data?.[0]?.maxSell;
-  
-  if (!maxBuy || !maxSell) {
-    throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
-  }
-
-  createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy}, Sell=${maxSell}`, requestId);
-  return { maxBuy, maxSell };
-}
-
-// Helper: Execute a spot trade
-async function executeSpotTrade(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Executes spot market trades
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Spot trade execution response
+ */
+async function executeSpotTrade(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   // Early input validation
   if (!payload.symbol) {
     createLog('TRADE', 'Missing required parameter: symbol', requestId);
@@ -587,17 +788,35 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env)
       tgtCcy: isBuy ? 'base_ccy' : 'quote_ccy'  // base_ccy for buys, quote_ccy for sells
     };
 
-    // Place order using batch orders
-    const { result } = await placeBatchOrders([orderData], credentials, requestId, env);
+    // If dryRun, return the order data without executing
+    if (dryRun) {
+      return { orderData };
+    }
+
+    // Place single order
+    const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Check both API-level and order-level success
-    if (result.code !== '0' || !result.data?.[0] || result.data[0].sCode !== '0') {
-      const errorMsg = result.data?.[0]?.sMsg || 'Failed to place spot order';
-      createLog('TRADE', `Order placement failed: ${errorMsg}`, requestId);
+    if (!result.successful || result.failed > 0) {
+      createLog('TRADE', `Order placement failed`, requestId);
       return { successful: 0, failed: 1, sz: orderSize };
     }
 
     // Return explicit success with size information
+    const markPrice = await getMarkPrice(instId, credentials);
+    createLog('TRADE', formatTradeLogMessage(
+      'SPOT',
+      payload.side.toUpperCase(),
+      {
+        symbol: instId,
+        size: orderSize,
+        price: markPrice,
+        maxSize: maxQty,
+        mode: 'cash',
+        tgtCcy: isBuy ? 'base_ccy' : 'quote_ccy',
+        qty: payload.qty
+      }
+    ), requestId, credentials.apiKey);
     return { successful: 1, failed: 0, sz: orderSize };
   } catch (error) {
     // Log unexpected errors
@@ -606,20 +825,24 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env)
   }
 }
 
-// Main perpetual futures execution function
-async function executePerpsOrder(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Main perpetual futures execution function
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Perpetual futures execution response
+ */
+async function executePerpsOrder(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   try {
     // Execute the appropriate operation based on payload
     const result = payload.closePosition
-      ? await closePerpsPosition(payload, credentials, brokerTag, requestId, env)
-      : await openPerpsPosition(payload, credentials, brokerTag, requestId, env);
+      ? await closePerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun)
+      : await openPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun);
     
-    // Ensure we have proper success/failure counts
-    return {
-      successful: result.successful || 0,
-      failed: result.failed || 0,
-      sz: result.sz || 0
-    };
+    return result;
   } catch (error) {
     // Log the error at this level only if it hasn't been logged before
     if (!error.logged) {
@@ -629,8 +852,17 @@ async function executePerpsOrder(payload, credentials, brokerTag, requestId, env
   }
 }
 
-// Helper: Open a perpetual futures position
-async function openPerpsPosition(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Opens a perpetual futures position
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Position opening response
+ */
+async function openPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   // Validate required parameters for opening position
   if (!payload.symbol || !payload.marginMode || !payload.side || !payload.qty) {
     throw new Error('Missing required parameters: symbol, marginMode, side, qty are required for opening position');
@@ -664,7 +896,6 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
 
     // Set leverage for opening position
     const posSide = payload.side.toLowerCase() === 'buy' ? 'long' : 'short';
-    createLog('TRADE', `Setting ${payload.leverage}x leverage for ${instId}`, requestId);
     await setLeverage({
       instId: instId,
       lever: payload.leverage.toString(),
@@ -690,8 +921,6 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
       throw new Error(`Invalid order size: ${orderSize}`);
     }
 
-    createLog('TRADE', `Opening ${payload.side} position for ${instId} with size ${orderSize} at ${payload.leverage}x leverage`, requestId);
-
     // Prepare order data
     const orderData = {
       instId,
@@ -704,22 +933,47 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
       sz: orderSize
     };
 
-    // Place order
-    const { result } = await placeBatchOrders([orderData], credentials, requestId, env);
-    
-    if (!result.data || !result.data[0] || result.data[0].sCode !== '0') {
-      throw new Error(result.data?.[0]?.sMsg || 'Failed to open position');
+    // If dryRun, return the order data without executing
+    if (dryRun) {
+      return { orderData };
     }
 
-    return { successful: 1, failed: 0, sz: orderSize };
+    // Place single order
+    const result = await placeOrder(orderData, credentials, requestId, env);
+    
+    // Return success with size information
+    const markPrice = await getMarkPrice(instId, credentials);
+    createLog('TRADE', formatTradeLogMessage(
+      'PERP',
+      'Open Position',
+      {
+        symbol: instId,
+        size: orderSize,
+        price: markPrice,
+        maxSize: maxQty,
+        mode: payload.marginMode,
+        leverage: payload.leverage,
+        qty: payload.qty
+      }
+    ), requestId, credentials.apiKey);
+    return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     createLog('ERROR', `Failed to open USDT Perpetual position: ${error.message}`, requestId, credentials.apiKey, env);
     throw error;
   }
 }
 
-// Helper: Close a perpetual futures position
-async function closePerpsPosition(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Closes a perpetual futures position
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Position closing response
+ */
+async function closePerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   // Validate required parameters for closing position
   if (!payload.symbol || !payload.marginMode) {
     throw new Error('Missing required parameters: symbol and marginMode are required for closing position');
@@ -750,8 +1004,10 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     
     // Use raw contract size directly from position (absolute value)
     const orderSize = Math.abs(positionSize).toString();
-    
-    // Prepare the order data
+
+    createLog('TRADE', `Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`, requestId);
+
+    // Prepare close order data
     const orderData = {
       instId: instId,
       tdMode: payload.marginMode,
@@ -764,18 +1020,28 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
       closePosition: true
     };
 
-    // Place order and validate response
-    const { result } = await placeBatchOrders([orderData], credentials, requestId, env);
-    
-    // Check both API-level and order-level success
-    if (result.code !== '0' || !result.data?.[0] || result.data[0].sCode !== '0') {
-      const error = new Error(result.data?.[0]?.sMsg || 'Failed to close position');
-      error.logged = true;
-      throw error;
+    // If dryRun, return the order data without executing
+    if (dryRun) {
+      return { orderData };
     }
 
+    // Place single order
+    const result = await placeOrder(orderData, credentials, requestId, env);
+    
     // Return success with size information
-    return { successful: 1, failed: 0, sz: orderSize };
+    const markPrice = await getMarkPrice(instId, credentials);
+    createLog('TRADE', formatTradeLogMessage(
+      'PERP_CLOSE',
+      'Close Position',
+      {
+        symbol: instId,
+        size: orderSize,
+        price: markPrice,
+        mode: payload.marginMode
+      },
+      position
+    ), requestId, credentials.apiKey);
+    return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     // Only log errors that haven't been logged before
     if (!error.logged && !error.message.includes('Order placed')) {
@@ -786,21 +1052,39 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
   }
 }
 
-// Main inverse perpetual execution function
-async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Main inverse perpetual execution function
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Inverse perpetual execution response
+ */
+async function executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   try {
     if (payload.closePosition) {
-      return closeInvPerpsPosition(payload, credentials, brokerTag, requestId, env);
+      return closeInvPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun);
     }
-    return openInvPerpsPosition(payload, credentials, brokerTag, requestId, env);
+    return openInvPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun);
   } catch (error) {
     createLog('ERROR', `Inverse perpetual trade execution failed: ${error.message}`, requestId, credentials.apiKey, env);
     throw error;
   }
 }
 
-// Helper: Open an inverse perpetual position
-async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, env) {
+/**
+ * Opens an inverse perpetual position
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Position opening response
+ */
+async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun = false) {
   // Early input validation
   if (!payload.symbol || !payload.marginMode || !payload.side || !payload.leverage) {
     createLog('TRADE', 'Missing required parameters: symbol, marginMode, side, and leverage are required', requestId);
@@ -817,7 +1101,6 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
     const instId = formatTradingPair(payload.symbol, 'invperps');
     
     // Get instrument info for lot size first
-    createLog('TRADE', `Getting instrument info for ${instId}`, requestId);
     const instInfo = await getInstrumentInfo(instId, credentials);
     if (!instInfo || !instInfo.lotSz) {
       createLog('TRADE', `Failed to get instrument info for ${instId}`, requestId);
@@ -826,7 +1109,6 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
 
     // Set leverage for opening position
     const posSide = payload.side.toLowerCase() === 'buy' ? 'long' : 'short';
-    createLog('TRADE', `Setting ${payload.leverage}x leverage for ${instId}`, requestId);
     try {
       await setLeverage({
         instId: instId,
@@ -866,11 +1148,9 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
       return { successful: 0, failed: 1, sz: 0 };
     }
 
-    createLog('TRADE', `Opening ${posSide} position for ${instId} with size ${orderSize} at ${payload.leverage}x leverage (max: ${maxQty})`, requestId);
-
     // Prepare order data
     const orderData = {
-      instId,
+      instId: instId,
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
@@ -880,18 +1160,30 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
       sz: orderSize
     };
 
-    // Place order
-    const { result } = await placeBatchOrders([orderData], credentials, requestId, env);
-    
-    // Check both API-level and order-level success
-    if (result.code !== '0' || !result.data?.[0] || result.data[0].sCode !== '0') {
-      const errorMsg = result.data?.[0]?.sMsg || 'Failed to place inverse perpetual order';
-      createLog('TRADE', `Order placement failed: ${errorMsg}`, requestId);
-      return { successful: 0, failed: 1, sz: orderSize };
+    // If dryRun, return the order data without executing
+    if (dryRun) {
+      return { orderData };
     }
 
-    // Return explicit success with size information
-    return { successful: 1, failed: 0, sz: orderSize };
+    // Place single order
+    const result = await placeOrder(orderData, credentials, requestId, env);
+    
+    // Return success with size information
+    const markPrice = await getMarkPrice(instId, credentials);
+    createLog('TRADE', formatTradeLogMessage(
+      'INV_PERP',
+      'Open Position',
+      {
+        symbol: instId,
+        size: orderSize,
+        price: markPrice,
+        maxSize: maxQty,
+        mode: payload.marginMode,
+        leverage: payload.leverage,
+        qty: payload.qty
+      }
+    ), requestId, credentials.apiKey);
+    return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     // Log unexpected errors
     createLog('TRADE', `Unexpected error in inverse perpetual position opening: ${error.message}`, requestId, credentials.apiKey, env);
@@ -899,16 +1191,21 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
   }
 }
 
-// Helper: Close an inverse perpetual position
-async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId, env) {
-  // Validate required parameters for closing position
+/**
+ * Closes an inverse perpetual position
+ * @param {Object} payload - Trade payload
+ * @param {Object} credentials - API credentials
+ * @param {string} brokerTag - Broker identification tag
+ * @param {string} requestId - Request identifier
+ * @param {Object} env - Environment variables
+ * @param {boolean} [dryRun=false] - If true, return order data without executing
+ * @returns {Promise<Object>} Position closing response
+ */
+async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId, env, dryRun = false) {
+  // Validate required parameters
   if (!payload.symbol || !payload.marginMode) {
-    throw new Error('Missing required parameters: symbol and marginMode are required for closing position');
-  }
-
-  // Validate margin mode
-  if (!['cross', 'isolated'].includes(payload.marginMode)) {
-    throw new Error('Invalid marginMode: must be either cross or isolated');
+    createLog('TRADE', 'Missing required parameters: symbol and marginMode are required', requestId);
+    return { successful: 0, failed: 1, sz: 0 };
   }
 
   try {
@@ -942,54 +1239,89 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
       closePosition: true
     };
 
-    // Place order
-    return await placeBatchOrders([orderData], credentials, requestId, env);
+    // If dryRun, return the order data without executing
+    if (dryRun) {
+      return { orderData };
+    }
+
+    // Place single order
+    const result = await placeOrder(orderData, credentials, requestId, env);
+    const markPrice = await getMarkPrice(instId, credentials);
+    createLog('TRADE', formatTradeLogMessage(
+      'INV_PERP_CLOSE',
+      'Close Position',
+      {
+        symbol: instId,
+        size: orderSize,
+        price: markPrice,
+        mode: payload.marginMode
+      },
+      position
+    ), requestId, credentials.apiKey);
+    return { result: null, successful: result.successful, failed: result.failed };
   } catch (error) {
     createLog('ERROR', `Failed to close inverse perpetual position: ${error.message}`, requestId, credentials.apiKey);
     return { result: null, successful: 0, failed: 1 };  // Return failure result instead of throwing
   }
 }
 
-// Helper: Place batch orders with OKX
-async function placeBatchOrders(orders, credentials, requestId, env) {
-  if (!Array.isArray(orders) || orders.length === 0) {
-    throw new Error('Invalid orders array provided to placeBatchOrders');
-  }
+/**
+ * Place a single order
+ * @param {Object} orderData - Order data
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request ID
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Object>} Order result
+ */
+async function placeOrder(orderData, credentials, requestId, env) {
+  const path = '/api/v5/trade/order';
+  const body = JSON.stringify(orderData);
+  
+  try {
+    const { headers } = await generateOkxRequest('POST', path, body, credentials);
+    const response = await fetch(`${OKX_API_URL}${path}`, {
+      method: 'POST',
+      headers,
+      body
+    });
 
-  createLog('TRADE', `Executing batch of ${orders.length} orders`, requestId, credentials.apiKey);
-  createLog('API', `Batch trade request:\n    Path: /api/v5/trade/batch-orders\n    Body: ${JSON.stringify(redactSensitiveData(orders))}`, requestId, credentials.apiKey);
-
-  const path = '/api/v5/trade/batch-orders';
-  const body = JSON.stringify(orders);
-  const { headers } = await generateOkxRequest(
-    credentials.apiKey,
-    credentials.secretKey,
-    credentials.passphrase,
-    'POST',
-    path,
-    body
-  );
-
-  const response = await fetch(`https://www.okx.com${path}`, {
-    method: 'POST',
-    headers,
-    body
-  });
-
-  const result = await response.json();
-  createLog('API', `Response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey);
-
-  if (result.code === '0' && result.data?.[0]?.sCode === '0') {
-    createLog('DEBUG', `Order ${result.data[0].clOrdId} placed successfully`, requestId);
-    return { result, successful: 1, failed: 0 };
-  } else {
-    const message = result.data?.[0]?.sMsg || 'Unknown error';
-    createLog('ERROR', `Trade execution failed: ${message}`, requestId);
-    return { result, successful: 0, failed: 1 };
+    const data = await response.json();
+    await createLog(LOG_LEVEL.DEBUG, `Response: ${JSON.stringify(data)}`, requestId);
+    
+    if (data.data && data.data[0]) {
+      const result = data.data[0];
+      if (result.sCode === '0') {
+        await createLog(LOG_LEVEL.TRADE,
+          `Order successful: ${orderData.sz} contracts`,
+          requestId,
+          credentials.apiKey
+        );
+        return { successful: 1, failed: 0 };
+      } else {
+        await createLog(LOG_LEVEL.ERROR,
+          `Order failed: ${result.sMsg}`,
+          requestId,
+          credentials.apiKey
+        );
+        return { successful: 0, failed: 1 };
+      }
+    }
+    return { successful: 0, failed: 1 };
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR,
+      `Order placement failed: ${error.message}`,
+      requestId,
+      credentials.apiKey
+    );
+    return { successful: 0, failed: 1 };
   }
 }
 
-// Helper: Validate trade response
+/**
+ * Trade response validation
+ * @param {Object} response - Trade response
+ * @returns {Object} Validation result
+ */
 function validateTradeResponse(response) {
   if (!response || !response.data || !Array.isArray(response.data)) {
     return { success: false, message: 'Invalid API response structure' };
@@ -1016,153 +1348,183 @@ function validateTradeResponse(response) {
   };
 }
 
-// Helper: Set leverage for futures trading
+/**
+ * Leverage setting
+ * @param {Object} data - Leverage configuration
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request ID
+ * @param {Object} env - Environment variables
+ * @returns {void}
+ */
 async function setLeverage(data, credentials, requestId, env) {
-  createLog('TRADE', `Setting leverage to ${data.lever}x for ${data.instId}`, requestId, credentials.apiKey, env);
+  await createLog(LOG_LEVEL.INFO, `Setting leverage to ${data.lever}x for ${data.instId}`, requestId, credentials.apiKey, env);
   
   const path = '/api/v5/account/set-leverage';
   const body = JSON.stringify(data);
   const { headers } = await generateOkxRequest(
-    credentials.apiKey,
-    credentials.secretKey,
-    credentials.passphrase,
     'POST',
     path,
-    body
+    body,
+    credentials
   );
 
-  const response = await fetch(`https://www.okx.com${path}`, {
+  const response = await fetch(`${OKX_API_URL}${path}`, {
     method: 'POST',
     headers,
     body
   });
 
   const result = await response.json();
-  createLog('API', `Leverage response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
+  await createLog(LOG_LEVEL.DEBUG, `Leverage response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
 
   if (result.code !== '0') {
     throw new Error(`Failed to set leverage: ${result.msg}`);
   }
 }
 
-// Helper: Execute trades for multiple accounts using batch orders
+/**
+ * Multi-account trade execution
+ * @param {Object} payload - Trade payload
+ * @param {Array} apiKeys - API keys for accounts
+ * @param {string} brokerTag - Broker tag
+ * @param {string} requestId - Request ID
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Object>} Trade execution result
+ */
 async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env) {
-  // Validate inputs
-  if (!Array.isArray(apiKeys) || apiKeys.length === 0) {
-    throw new Error('No API keys provided for trade execution');
-  }
-
-  const isMultiAccount = apiKeys.length > 1;
-  const apiKeysList = apiKeys.map(k => k.api_key).join(',');
+  let totalSuccessful = 0;
+  let totalFailed = 0;
+  let totalSize = 0;
 
   try {
-    // Send initial message
-    await sendTelegramMessage('REQUEST', `Executing ${payload.side || ''} order for ${payload.symbol}`, 
-      requestId, apiKeysList, isMultiAccount, apiKeys.length, null, payload);
+    const allOrders = [];
+    
+    createLog('TRADE', `Starting multi-account trade execution for ${apiKeys.length} accounts`, requestId);
+    
+    // First, collect all orders using dryRun
+    for (const account of apiKeys) {
+      // Map database credential format to expected format
+      const credentials = {
+        apiKey: account.api_key || account.apiKey,
+        secretKey: account.secret_key || account.secretKey,
+        passphrase: account.passphrase
+      };
 
-    // Group keys by instrument
-    const groupedKeys = {};
-    apiKeys.forEach(key => {
-      const instId = formatTradingPair(payload.symbol, payload.type);
-      if (!groupedKeys[instId]) groupedKeys[instId] = [];
-      groupedKeys[instId].push(key);
-    });
+      // Validate credentials
+      if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+        createLog('ERROR', `Invalid credentials for account: missing required fields`, requestId);
+        totalFailed++;
+        continue;
+      }
 
-    // Execute trades in parallel for each instrument
-    const allResults = await Promise.all(
-      Object.entries(groupedKeys).map(async ([instId, keys]) => {
-        const chunkSize = 20;
-        const chunks = [];
-        
-        for (let i = 0; i < keys.length; i += chunkSize) {
-          chunks.push(keys.slice(i, i + chunkSize));
+      let result;
+      try {
+        // Prepare order based on trade type
+        if (payload.type === 'spot') {
+          result = await executeSpotTrade(payload, credentials, brokerTag, requestId, env, true);
+        } else if (payload.type === 'perps') {
+          result = await executePerpsOrder(payload, credentials, brokerTag, requestId, env, true);
+        } else if (payload.type === 'invperps') {
+          result = await executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env, true);
+        } else {
+          throw new Error(`Unsupported trade type: ${payload.type}`);
         }
 
-        let instrumentSuccessful = 0;
-        let instrumentFailed = 0;
-        const failedAccounts = [];
-
-        for (const chunk of chunks) {
-          const results = await Promise.all(
-            chunk.map(async ({ api_key, secret_key, passphrase }) => {
-              try {
-                const result = await executeTrade(
-                  payload,
-                  { apiKey: api_key, secretKey: secret_key, passphrase },
-                  brokerTag,
-                  requestId,
-                  env
-                );
-                if (result.failed > 0) {
-                  failedAccounts.push(api_key);
-                }
-                return result;
-              } catch (error) {
-                failedAccounts.push(api_key);
-                return { successful: 0, failed: 1 };
-              }
-            })
-          );
-
-          // Aggregate results from this chunk
-          results.forEach(result => {
-            instrumentSuccessful += result.successful;
-            instrumentFailed += result.failed;
-          });
+        if (result && result.orderData) {
+          // Add account info to order data for logging
+          result.orderData.accountId = credentials.apiKey.substring(0, 4);
+          allOrders.push({ order: result.orderData, credentials });
+          createLog('TRADE', `Order prepared successfully for account ${result.orderData.accountId}`, requestId);
+        } else {
+          throw new Error('Order preparation failed: no order data returned');
         }
+      } catch (error) {
+        const accountId = credentials.apiKey.substring(0, 4);
+        createLog('ERROR', `Failed to prepare order for account ${accountId}: ${error.message}`, requestId);
+        totalFailed++;
+      }
+    }
 
-        return { 
-          instId, 
-          successful: instrumentSuccessful, 
-          failed: instrumentFailed,
-          failedAccounts 
-        };
-      })
-    );
+    if (allOrders.length === 0) {
+      createLog('TRADE', 'No valid orders to execute', requestId);
+      return { successful: 0, failed: totalFailed, sz: 0 };
+    }
 
-    // Calculate final totals
-    const finalTotals = allResults.reduce((acc, curr) => {
-      acc.successful += curr.successful;
-      acc.failed += curr.failed;
-      acc.failedAccounts.push(...curr.failedAccounts);
-      return acc;
-    }, { successful: 0, failed: 0, failedAccounts: [] });
+    createLog('TRADE', `Executing ${allOrders.length} prepared orders`, requestId);
 
-    // Collect account IDs
-    const accountIds = apiKeys.map(key => key.api_key);
-    const successfulAccounts = accountIds.filter(id => !finalTotals.failedAccounts.includes(id));
-    const failedAccountIds = finalTotals.failedAccounts.length > 0 ? finalTotals.failedAccounts.join(', ') : 'None';
+    // Execute each order individually
+    for (const { order, credentials } of allOrders) {
+      try {
+        const result = await placeOrder(order, credentials, requestId, env);
+        if (result.successful) {
+          totalSuccessful++;
+          totalSize += parseFloat(order.sz || 0);
+          createLog('TRADE', `Order executed successfully for account ${order.accountId}`, requestId);
+        } else {
+          totalFailed++;
+          createLog('ERROR', `Order execution failed for account ${order.accountId}`, requestId);
+        }
+      } catch (error) {
+        createLog('ERROR', `Trade failed for account ${order.accountId}: ${error.message}`, requestId);
+        totalFailed++;
+      }
+    }
 
-    // Send final status message
-    await sendTelegramMessage(
-      'RESPONSE',
-      `Completed execution for ${payload.symbol}`,
-      requestId,
-      apiKeysList,
-      isMultiAccount,
-      apiKeys.length,
-      null,
-      payload,
-      finalTotals.failedAccounts
-    );
+    // Create detailed summary
+    const summary = {
+      'Total Accounts': apiKeys.length,
+      'Successful Orders': totalSuccessful,
+      'Failed Orders': totalFailed,
+      'Total Size': totalSize.toString(),
+      Type: payload.type.toUpperCase(),
+      Symbol: payload.symbol
+    };
 
-    return { successful: finalTotals.successful, failed: finalTotals.failed };
+    createLog('TRADE', formatTradeLogMessage(
+      'MULTI_ACCOUNT',
+      'Trade Summary',
+      summary
+    ), requestId);
+
+    const result = {
+      successful: totalSuccessful,
+      failed: totalFailed,
+      sz: totalSize.toFixed(8)
+    };
+
+    await createTradeExecutionSummary(result, payload.symbol, requestId);
+    return result;
   } catch (error) {
-    createLog('ERROR', `Multi-account trade execution failed: ${error.message}`, requestId);
-    throw error;
+    const result = {
+      successful: totalSuccessful,
+      failed: totalFailed,
+      sz: totalSize.toFixed(8)
+    };
+    await createTradeExecutionSummary(result, payload.symbol, requestId);
+    return result;
   }
 }
 
-// Helper: Get API keys from database
+//=============================================================================
+// [DB] Database Functions
+//=============================================================================
+
+/**
+ * Retrieves API keys from database
+ * @param {Object} env - Environment variables
+ * @param {string} requestId - Request ID
+ * @param {string} exchange - Exchange name
+ * @returns {Array} API keys
+ */
 async function getApiKeys(env, requestId, exchange) {
   if (!exchange) {
-    createLog('DB', 'No exchange provided to getApiKeys', requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, 'No exchange provided to getApiKeys', requestId, null, env);
     throw new Error('Exchange parameter is required');
   }
 
   // Normalize exchange name to uppercase
   const normalizedExchange = exchange.toUpperCase();
-  createLog('DB', `Fetching API keys for ${normalizedExchange} from database`, requestId, null, env);
+  await createLog(LOG_LEVEL.INFO, `Fetching API keys for ${normalizedExchange} from database`, requestId, null, env);
   
   try {
     const stmt = await env.DB.prepare(
@@ -1172,278 +1534,318 @@ async function getApiKeys(env, requestId, exchange) {
     
     if (!stmt.results || stmt.results.length === 0) {
       const error = `No trading API keys found for ${normalizedExchange}`;
-      createLog('DB', error, requestId, null, env);
+      await createLog(LOG_LEVEL.INFO, error, requestId, null, env);
       throw new Error(error);
     }
     
     // Debug log (first 4 chars only)
-    stmt.results.forEach((key, index) => {
-      createLog('DB', `Key ${index + 1}: API=${mask(key.api_key)}, Secret=${mask(key.secret_key)}, Pass=${mask(key.passphrase)}`, requestId, null, env);
-    });
+    for (const [index, key] of stmt.results.entries()) {
+      await createLog(LOG_LEVEL.INFO, 
+        `Key ${index + 1}: API=${mask(key.api_key)}, Secret=${mask(key.secret_key)}, Pass=${mask(key.passphrase)}`, 
+        requestId, 
+        null, 
+        env
+      );
+    }
     
     return stmt.results;
   } catch (error) {
     const errorMsg = error.message.includes('No trading API keys') 
       ? error.message 
       : `Database error while fetching ${normalizedExchange} keys: ${error.message}`;
-    createLog('DB', errorMsg, requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, errorMsg, requestId, null, env);
     throw new Error(errorMsg);
   }
 }
 
-// Helper: Create log entry with request and account info
-async function createLog(type, message, requestId = '', accountId = '', env = null) {
-  const timestamp = new Date().toISOString();
-  const accountInfo = accountId ? `[API Key: ${mask(accountId)}]` : '';
-  const reqInfo = requestId ? `[ReqID: ${requestId.substring(0, 8)}]` : '';
-  const logMessage = `[${type}]${reqInfo}${accountInfo} ${message}`;
-  
-  // Standard console logging
-  console.log(logMessage);
-  
-  // Telegram notifications for important events
-  if (env && shouldNotifyTelegram(type, message)) {
-    const telegramMessage = formatTelegramMessage(type, message, requestId, accountId);
-    if (telegramMessage) {
-      await sendTelegramMessage(telegramMessage.type, telegramMessage.message, env);
-    }
-  }
-}
+//=============================================================================
+// [LOGGING] Logging Functions
+//=============================================================================
 
-// Helper: Format telegram message
-function formatTelegramMessage(type, message, requestId, accountId, isMultiAccount = false, totalAccounts = 1, volume = null, payload = null, failedAccounts = []) {
-  const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-  const reqId = `Request ID: ${requestId ? requestId.substring(0, 8) : ''}`;
-
-  // Define message type icons
-  const icons = {
-    WEBHOOK: '📥',
-    TRADE_OPEN: '📈',
-    TRADE_CLOSE: '📉',
-    ERROR: '❌',
-    SUCCESS: '✅'
-  };
-
-  // Get symbol and action from payload
-  const symbol = payload?.symbol || 'UNKNOWN';
-  const action = payload?.side?.toUpperCase() || 'UNKNOWN';
-
-  // Helper to format the title with icon
-  const formatTitle = (text, messageType) => `${icons[messageType]} WEBHOOK-API: ${text}`;
-
-  switch(type) {
-    case 'REQUEST': {
-      const tradeType = isMultiAccount ? 'MULTI-ACCOUNT TRADE' : 'TRADE EXECUTION';
-      let accountInfo;
-      
-      if (isMultiAccount && accountId) {
-        const accounts = accountId.split(',');
-        accountInfo = `\n\nProcessing trades for ${accounts.length} accounts:`;
-        accounts.forEach((id, idx) => {
-          accountInfo += `\n${idx + 1}. API Key: ${mask(id)}`;
-        });
-      } else {
-        accountInfo = '\n\nProcessing trade for 1 account...';
-      }
-
-      const message = [
-        `${tradeType} - ${symbol}`,
-        `Time: ${timestamp}`,
-        reqId,
-        `Action: ${action}`,
-        `Exchange: OKX`,
-        accountInfo
-      ].join('\n');
-
-      return {
-        type: 'WEBHOOK',
-        message: formatTitle(message, 'TRADE_OPEN')
-      };
-    }
-      
-    case 'API': {
-      if (message.includes('Response:')) {
-        const successTitle = isMultiAccount ? 'TRADE SUMMARY' : 'TRADE SUCCESS';
-        const messageLines = [
-          `${successTitle} - ${symbol}`,
-          `Time: ${timestamp}`,
-          reqId,
-          '',
-          'Execution Results:'
-        ];
-
-        if (isMultiAccount) {
-          const failedCount = failedAccounts?.length || 0;
-          const successCount = totalAccounts - failedCount;
-          messageLines.push(`• Total Accounts: ${totalAccounts}`);
-          messageLines.push(`• Successful: ${successCount}`);
-          if (failedCount > 0) {
-            messageLines.push(`• Failed: ${failedCount}`);
-          }
-        }
-
-        if (volume && volume !== '0' && volume !== '0.00000000') {
-          const baseAsset = symbol.split('-')[0];
-          messageLines.push(`• ${isMultiAccount ? 'Total Volume' : 'Trade Volume'}: ${volume} ${baseAsset}`);
-        }
-
-        const duration = calculateDuration(timestamp);
-        messageLines.push(`• Duration: ${duration} ${duration === 1 ? 'second' : 'seconds'}`);
-
-        return {
-          type: 'SUCCESS',
-          message: formatTitle(messageLines.join('\n'), 'SUCCESS')
-        };
-      }
-      break;
-    }
-      
-    case 'ERROR': {
-      const errorTitle = isMultiAccount ? 'TRADE ERRORS' : 'TRADE ERROR';
-      const messageLines = [
-        `${errorTitle} - ${symbol}`,
-        `Time: ${timestamp}`,
-        reqId,
-        ''
-      ];
-
-      if (isMultiAccount && failedAccounts?.length > 0) {
-        messageLines.push(`Failed Accounts (${failedAccounts.length}):`);
-        failedAccounts.forEach((fa, index) => {
-          messageLines.push(`${index + 1}. ${fa.accountId} (Error: ${fa.error})`);
-        });
-
-        // Group errors by type
-        const errorTypes = {};
-        failedAccounts.forEach(fa => {
-          errorTypes[fa.error] = (errorTypes[fa.error] || 0) + 1;
-        });
-
-        messageLines.push('\nError Analysis:');
-        Object.entries(errorTypes).forEach(([error, count]) => {
-          messageLines.push(`• ${error}: ${count}`);
-        });
-      } else {
-        messageLines.push(`Failed Account:\n• API Key: ${mask(accountId)}\nError: ${message}`);
-      }
-
-      messageLines.push('Exchange: OKX');
-
-      return {
-        type: 'ERROR',
-        message: formatTitle(messageLines.join('\n'), 'ERROR')
-      };
-    }
-  }
-
-  return null;
-}
-
-// Helper: Calculate duration in seconds between given timestamp and now
-function calculateDuration(startTime) {
-  const start = new Date();
-  start.setHours(startTime.split(':')[0], startTime.split(':')[1], startTime.split(':')[2]);
-  const now = new Date();
-  return Math.max(1, Math.round((now - start) / 1000));
-}
-
-// Helper: Send message to Telegram
-async function sendTelegramMessage(type, message, env) {
-  try {
-    if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHANNEL_ID) return;
-  
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: env.TELEGRAM_CHANNEL_ID,
-        text: message,
-        parse_mode: 'Markdown'
-      })
-    });
-  } catch (error) {
-    console.error('Telegram notification failed:', error.message);
-  }
-}
-
-// Helper: Determine if event should be sent to Telegram
-function shouldNotifyTelegram(type, message) {
-  switch(type) {
-    case 'REQUEST':
-      return true;  // Always notify for new webhooks
-    case 'TRADE':
-      return message.includes('Executing') || message.includes('Closing position');
-    case 'API':
-      return (message.includes('Response:') && message.includes('ordId')) || message.includes('failed:');
-    case 'ERROR':
-      return true;  // Always notify for errors
-    default:
-      return false;
-  }
-}
-
-// Helper: Mask sensitive strings
-function mask(value, visible = 4) {
-  if (!value) return '';
-  return value.substring(0, visible) + '...';
-}
-
-// Helper: Redact sensitive data
-function redactSensitiveData(obj) {
-  if (!obj) return obj;
-  
-  const copy = { ...obj };
-  if (copy.authToken) {
-    copy.authToken = copy.authToken.substring(0, 4) + '***';
-  }
-  return copy;
-}
-
-// Validate broker tag at startup
-const validateBrokerTag = (tag) => {
-  if (!tag || typeof tag !== 'string' || tag.length === 0) {
-    throw new Error('BROKER_TAG environment variable is required');
-  }
+/**
+ * Log levels enum for consistent level usage
+ * @readonly
+ * @enum {string}
+ */
+const LOG_LEVEL = {
+  ERROR: 'ERROR',
+  INFO: 'INFO',
+  DEBUG: 'DEBUG',
+  TRADE: 'TRADE'
 };
 
-// Token validation function
-function validateAuthToken(payload, env) {
-  const { authToken } = payload;
-  
-  if (!authToken) {
-    throw new Error('Authentication token is required');
-  }
+/**
+ * Format number with thousands separator
+ * @param {number} num Number to format
+ * @returns {string} Formatted number
+ */
+function formatNumber(num) {
+  return new Intl.NumberFormat('en-US').format(num);
+}
 
-  // Use constant-time comparison to prevent timing attacks
-  if (authToken !== env.WEBHOOK_AUTH_TOKEN) {
-    throw new Error('Invalid authentication token');
+/**
+ * Get base and quote currency from symbol
+ * @param {string} symbol Trading symbol (e.g., BTC-USDT)
+ * @returns {Object} Object containing base and quote currencies
+ */
+function parseSymbol(symbol) {
+  const [base, quote] = symbol.split('-');
+  return { base, quote };
+}
+
+/**
+ * Formats trade details based on trade type
+ * @param {string} type Trade type (SPOT, PERP, INV_PERP)
+ * @param {Object} details Trade details
+ * @returns {Object} Formatted trade details
+ */
+function formatTradeDetails(type, details) {
+  const { symbol, size, price, maxSize, mode, leverage = null } = details;
+  const { base, quote } = parseSymbol(symbol);
+  const percentageUsed = details.qty?.includes('%') ? 
+    details.qty : 
+    `${(parseFloat(size) / parseFloat(maxSize) * 100).toFixed(2)}%`;
+
+  switch(type) {
+    case 'SPOT': {
+      const isBaseSize = details.tgtCcy === 'base_ccy';
+      const baseAmount = isBaseSize ? size : (size / price);
+      const quoteAmount = isBaseSize ? (size * price) : size;
+      
+      return {
+        Symbol: symbol,
+        Amount: isBaseSize ? 
+          `${formatNumber(baseAmount, 8)} ${base}` :
+          `${formatNumber(quoteAmount, 2)} ${quote}`,
+        Price: `${formatNumber(price, 2)} ${quote}`,
+        Value: isBaseSize ?
+          `~${formatNumber(quoteAmount, 2)} ${quote}` :
+          `~${formatNumber(baseAmount, 8)} ${base}`,
+        'Max Available': isBaseSize ?
+          `${formatNumber(maxSize, 8)} ${base}` :
+          `${formatNumber(maxSize, 2)} ${quote}`,
+        'Percentage Used': percentageUsed,
+        Mode: mode
+      };
+    }
+    
+    case 'PERP': {
+      const notionalValue = size * price;
+      const requiredMargin = notionalValue / (leverage || 1);
+      
+      return {
+        Symbol: symbol,
+        'Position Size': `${formatNumber(size, 4)} contracts (1x = 1 ${base})`,
+        'Notional Value': `~${formatNumber(notionalValue, 2)} ${quote}`,
+        Leverage: leverage ? `${leverage}x` : 'cross',
+        'Required Margin': `~${formatNumber(requiredMargin, 2)} ${quote}`,
+        Mode: mode
+      };
+    }
+    
+    case 'INV_PERP': {
+      const contractValue = 100; // USD per contract
+      const notionalUsd = size * contractValue;
+      const btcMargin = (notionalUsd / price) / (leverage || 1);
+      
+      return {
+        Symbol: symbol,
+        'Position Size': `${formatNumber(size, 4)} contracts (1x = ${contractValue} USD)`,
+        'Notional Value': `~${formatNumber(notionalUsd, 2)} USD`,
+        Leverage: leverage ? `${leverage}x` : 'cross',
+        'Required Margin': `~${formatNumber(btcMargin, 8)} ${base}`,
+        Mode: mode
+      };
+    }
+    
+    default:
+      return details;
   }
 }
 
-// Health check endpoint
-router.get('/', () =>
-  new Response(JSON.stringify({
-    status: 'healthy',
-    timestamp: new Date().toISOString()
-  }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' }
-  })
-);
+/**
+ * Formats authentication log message
+ * @param {string} method - HTTP method
+ * @param {string} path - API endpoint path
+ * @param {Object} params - Request parameters
+ * @returns {string} Formatted authentication log message
+ */
+function formatAuthLogMessage(method, path, params) {
+  // Only log essential auth details
+  return `\n  Request: ${method} ${path}${
+    Object.keys(params).length ? 
+    `\n  Essential Params: ${['instId', 'tdMode', 'side', 'sz'].map(key => 
+      params[key] ? `${key}=${params[key]}` : null
+    ).filter(Boolean).join(', ')}` : 
+    ''
+  }`;
+}
 
-// Favicon handler (silent)
+/**
+ * Formats a trade log message with improved details
+ * @param {string} type Trade type
+ * @param {string} action Trade action
+ * @param {Object} details Trade details
+ * @param {Object} [position=null] Position details
+ * @returns {string} Formatted trade log message
+ */
+function formatTradeLogMessage(type, action, details, position = null) {
+  let message = `\n  ${type} ${action}:`;
+  
+  if (position) {
+    const { base, quote } = parseSymbol(details.symbol);
+    const currency = type === 'INV_PERP' ? base : quote;
+    
+    message += `
+    Position:
+    - Size: ${formatNumber(position.pos, 4)} contracts
+    - Entry Price: ${formatNumber(position.avgPx, 2)} ${currency}
+    - Mark Price: ${formatNumber(position.markPx, 2)} ${currency}
+    - PnL: ${formatNumber(position.pnl, 4)} ${currency}
+    - Leverage: ${position.lever}x`;
+  }
+
+  const formattedDetails = formatTradeDetails(type.replace('_CLOSE', ''), details);
+  message += `\n    Details:`;
+  Object.entries(formattedDetails).forEach(([key, value]) => {
+    message += `\n    - ${key}: ${value}`;
+  });
+  
+  return message;
+}
+
+/**
+ * Creates a standardized log entry with proper formatting
+ * @param {LOG_LEVEL} level - Log level (INFO, TRADE, ERROR, etc.)
+ * @param {string} message - Log message
+ * @param {string} requestId - Request identifier
+ * @param {string} [apiKey] - Optional API key
+ * @param {Object} [env] - Environment variables
+ */
+async function createLog(level, message, requestId, apiKey = '', env = null) {
+  try {
+    const timestamp = new Date().toISOString()
+      .slice(0, 19)
+      .replace('T', '..')
+      .replace(/-/g, '.');
+    
+    const reqIdStr = requestId ? `[ReqID=${requestId.slice(0, 8)}...]` : '';
+    const accountStr = apiKey ? `[Account=${apiKey.slice(0, 4)}...]` : '';
+    
+    // Format multi-line messages with proper indentation
+    const formattedMessage = (message || '').toString().split('\n')
+      .map((line, i) => i === 0 ? line : '  ' + line)
+      .join('\n');
+
+    console.log(`[${timestamp}][${level}]${reqIdStr}${accountStr} ${formattedMessage}`);
+  } catch (error) {
+    console.error(`Logging error: ${error.message}`);
+  }
+}
+
+/**
+ * Creates a summary of trade execution results
+ * @param {Object} result - Execution result containing successful count, failed count, and size
+ * @param {string} symbol - Trading symbol
+ * @param {string} requestId - Request identifier
+ */
+async function createTradeExecutionSummary(result, symbol, requestId) {
+  try {
+    const status = result.failed === 0 ? 'Complete' : 
+                  result.successful > 0 ? 'Partial Success' : 
+                  'Failed';
+    
+    const summary = [
+      `Trade Execution Summary for ${symbol}`,
+      `    Status: ${status}`,
+      `    Successful: ${result.successful}`,
+      `    Failed: ${result.failed}`,
+      `    Total Size: ${result.sz} contracts`
+    ].join('\n');
+
+    await createLog(LOG_LEVEL.TRADE, summary, requestId);
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR, 
+      `Failed to create trade summary: ${error.message}`, 
+      requestId
+    );
+  }
+}
+
+/**
+ * Logs details of a trade operation
+ * @param {string} operation - Operation type (e.g., 'Opening', 'Closing')
+ * @param {Object} position - Position details
+ * @param {string} requestId - Request identifier
+ * @param {string} apiKey - API key
+ */
+async function logTradeOperation(operation, position, requestId, apiKey) {
+  try {
+    if (!position || typeof position !== 'object') {
+      throw new Error('Invalid position object');
+    }
+
+    const { instId, posSide, sz, avgPx } = position;
+    const details = [
+      `${operation} ${posSide || ''} position:`,
+      `  Symbol: ${instId || 'Unknown'}`,
+      `  Size: ${sz || 0} contracts`,
+      avgPx ? `  Price: $${avgPx}` : ''
+    ].filter(Boolean).join('\n');
+
+    await createLog(LOG_LEVEL.TRADE, details, requestId, apiKey);
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR, 
+      `Failed to log trade operation: ${error.message}`, 
+      requestId, 
+      apiKey
+    );
+  }
+}
+
+//=============================================================================
+// [ROUTER] API Route Handlers
+//=============================================================================
+
+/**
+ * Health check endpoint handler
+ * @returns {Response} Health check response
+ */
+router.get('/', async (request) => {
+  try {
+    const health = await generateHealthCheck();
+    return new Response(JSON.stringify(health), {
+      status: health.status === 'healthy' ? 200 : 
+              health.status === 'degraded' ? 206 : 500,
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache'
+      }
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+});
+
+/**
+ * Favicon handler
+ * @returns {Response} Favicon response
+ */
 router.get('/favicon.ico', () => new Response(null, { status: 204 }));
 
-// Webhook endpoint
+/**
+ * Main webhook endpoint handler
+ * @returns {Response} Webhook processing response
+ */
 router.post('/', async (request, env) => {
   const requestId = crypto.randomUUID();
   const clientIp = request.headers.get('cf-connecting-ip');
   
-  createLog('REQUEST', `Received webhook request from ${clientIp}`, requestId, null, env);
+  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
   
   try {
     const payload = await request.json();
-    createLog('PAYLOAD', `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
     
     // Token validation as the first step
     validateAuthToken(payload, env);
@@ -1453,7 +1855,7 @@ router.post('/', async (request, env) => {
 
     // Get API keys from database
     const apiKeys = await getApiKeys(env, requestId, payload.exchange);
-    createLog('TRADE', `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
     
     // Select broker tag based on exchange
     const brokerTag = payload.exchange.toLowerCase() === 'okx' ? 
@@ -1471,30 +1873,17 @@ router.post('/', async (request, env) => {
       env
     );
     
-    createLog('TRADE', `Completed: ${results.successful} successful, ${results.failed} failed`, requestId, null, env);
-    
-    if (results.failed > 0) {
-      return new Response(JSON.stringify({
-        message: `Processed ${results.successful} successful and ${results.failed} failed trades`,
-        requestId: requestId,
-        successful: results.successful,
-        failed: results.failed
-      }), {
-        status: 207,  // 207 Multi-Status for partial success
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
     return new Response(JSON.stringify({
-      message: `Successfully processed ${results.successful} trades`,
+      message: `Processed ${results.successful} successful and ${results.failed} failed trades`,
       requestId: requestId,
-      results: results.successful
+      successful: results.successful,
+      failed: results.failed
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    createLog('ERROR', `Error: ${error.message}`, requestId, null, env);
+    await createLog(LOG_LEVEL.ERROR, `Error: ${error.message}`, requestId, null, env);
     
     // Add specific handling for auth errors
     if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
@@ -1518,29 +1907,12 @@ router.post('/', async (request, env) => {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-})
-
-// Helper: Get exchange credentials
-function getExchangeCredentials(exchange, env) {
-  const exchangeKey = exchange.toUpperCase();
-  const credentials = {
-    apiKey: env[`${exchangeKey}_API_KEY`],
-    secretKey: env[`${exchangeKey}_SECRET_KEY`],
-    passphrase: env[`${exchangeKey}_PASSPHRASE`]
-  };
-  
-  if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-    throw new Error(`Missing API credentials for ${exchange}`);
-  }
-  
-  return credentials;
-}
+});
 
 // Catch-all handler for other methods
 router.all('*', () => new Response('Method not allowed', { status: 405 }));
 
 // Export the router handler
 export default {
-  fetch: router.handle,
-  getExchangeCredentials
+  fetch: router.handle
 };
