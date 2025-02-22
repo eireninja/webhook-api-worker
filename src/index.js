@@ -5,6 +5,7 @@
  */
 
 import { Router } from 'itty-router';
+import { formatTradeMessage, sendTelegramMessage } from './telegram.js';
 
 //=============================================================================
 // [INIT] Initialization and Constants
@@ -1395,9 +1396,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
   let totalSuccessful = 0;
   let totalFailed = 0;
   let totalSize = 0;
+  let allOrders = [];  // Move allOrders declaration to outer scope
 
   try {
-    const allOrders = [];
+    const preparedOrders = [];
     
     createLog('TRADE', `Starting multi-account trade execution for ${apiKeys.length} accounts`, requestId);
     
@@ -1453,20 +1455,26 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     createLog('TRADE', `Executing ${allOrders.length} prepared orders`, requestId);
 
     // Execute each order individually
-    for (const { order, credentials } of allOrders) {
+    for (const orderObj of allOrders) {
       try {
-        const result = await placeOrder(order, credentials, requestId, env);
+        const result = await placeOrder(orderObj.order, orderObj.credentials, requestId, env);
         if (result.successful) {
           totalSuccessful++;
-          totalSize += parseFloat(order.sz || 0);
-          createLog('TRADE', `Order executed successfully for account ${order.accountId}`, requestId);
+          totalSize += parseFloat(orderObj.order.sz || 0);
+          createLog('TRADE', `Order executed successfully for account ${orderObj.order.accountId}`, requestId);
+          orderObj.success = true;  // Mark as successful
+          orderObj.error = null;    // Clear any error
         } else {
           totalFailed++;
-          createLog('ERROR', `Order execution failed for account ${order.accountId}`, requestId);
+          createLog('ERROR', `Order execution failed for account ${orderObj.order.accountId}`, requestId);
+          orderObj.success = false;
+          orderObj.error = 'Order execution failed';
         }
       } catch (error) {
-        createLog('ERROR', `Trade failed for account ${order.accountId}: ${error.message}`, requestId);
+        createLog('ERROR', `Trade failed for account ${orderObj.order.accountId}: ${error.message}`, requestId);
         totalFailed++;
+        orderObj.success = false;
+        orderObj.error = error.message;
       }
     }
 
@@ -1493,6 +1501,31 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     };
 
     await createTradeExecutionSummary(result, payload.symbol, requestId);
+
+    // Send Telegram notification
+    try {
+      createLog('INFO', `[TG Debug] Sending ${totalSuccessful === apiKeys.length ? 'success' : 'error'} notification for ${payload.symbol}`, requestId);
+      
+      const telegramMsg = formatTradeMessage({
+        symbol: payload.symbol,
+        side: payload.closePosition ? 'CLOSE' : (payload.side || 'SELL'), // Set side explicitly for close positions
+        requestId,
+        totalAccounts: apiKeys.length,
+        successCount: totalSuccessful,
+        failedAccounts: allOrders.filter(o => !o.success).map(o => o.order.accountId),
+        totalVolume: totalSize.toFixed(8),
+        errors: totalSuccessful === apiKeys.length ? [] : ['Trade partially failed'], // Only pass error if actually failed
+        closePosition: !!payload.closePosition  // Ensure boolean
+      });
+
+      if (telegramMsg) {
+        const sent = await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
+        createLog('INFO', `[TG Debug] Notification sent: ${sent}`, requestId);
+      }
+    } catch (error) {
+      createLog('ERROR', `[TG Debug] Failed to send notification: ${error.message}`, requestId);
+    }
+
     return result;
   } catch (error) {
     const result = {
@@ -1500,7 +1533,32 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       failed: totalFailed,
       sz: totalSize.toFixed(8)
     };
+
     await createTradeExecutionSummary(result, payload.symbol, requestId);
+
+    // Send Telegram notification for error
+    try {
+      createLog('INFO', `[TG Debug] Sending error notification for ${payload.symbol}`, requestId);
+      
+      const telegramMsg = formatTradeMessage({
+        symbol: payload.symbol,
+        side: payload.closePosition ? 'CLOSE' : (payload.side || 'SELL'), // Set side explicitly for close positions
+        requestId,
+        totalAccounts: apiKeys.length,
+        successCount: totalSuccessful,
+        failedAccounts: allOrders.filter(o => !o.success).map(o => o.order.accountId),
+        errors: [error.message],
+        closePosition: !!payload.closePosition  // Ensure boolean
+      });
+
+      if (telegramMsg) {
+        const sent = await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
+        createLog('INFO', `[TG Debug] Error notification sent: ${sent}`, requestId);
+      }
+    } catch (telegramError) {
+      createLog('ERROR', `[TG Debug] Failed to send error notification: ${telegramError.message}`, requestId);
+    }
+
     return result;
   }
 }
@@ -1600,8 +1658,21 @@ function parseSymbol(symbol) {
  * @returns {Object} Formatted trade details
  */
 function formatTradeDetails(type, details) {
-  const { symbol, size, price, maxSize, mode, leverage = null } = details;
-  const { base, quote } = parseSymbol(symbol);
+  // If dealing with a multi-account summary, return details as is
+  if (type === 'MULTI_ACCOUNT') {
+    return details;
+  }
+
+  // Safely retrieve the symbol from details (support both lowercase and uppercase keys)
+  const sym = details.symbol || details.Symbol;
+  if (!sym) return details;
+  
+  const { base, quote } = parseSymbol(sym);
+
+  // Provide fallback values to avoid undefined variables
+  const size = details.size || 0;
+  const price = details.price || 0;
+  const maxSize = details.maxSize || 1; // Avoid division by zero
   const percentageUsed = details.qty?.includes('%') ? 
     details.qty : 
     `${(parseFloat(size) / parseFloat(maxSize) * 100).toFixed(2)}%`;
@@ -1609,55 +1680,54 @@ function formatTradeDetails(type, details) {
   switch(type) {
     case 'SPOT': {
       const isBaseSize = details.tgtCcy === 'base_ccy';
-      const baseAmount = isBaseSize ? size : (size / price);
-      const quoteAmount = isBaseSize ? (size * price) : size;
+      const baseAmount = isBaseSize ? size : (price ? size / price : 0);
+      const quoteAmount = isBaseSize ? (price ? size * price : 0) : size;
       
       return {
-        Symbol: symbol,
+        Symbol: sym,
         Amount: isBaseSize ? 
-          `${formatNumber(baseAmount, 8)} ${base}` :
-          `${formatNumber(quoteAmount, 2)} ${quote}`,
-        Price: `${formatNumber(price, 2)} ${quote}`,
+          `${formatNumber(baseAmount)} ${base}` :
+          `${formatNumber(quoteAmount)} ${quote}`,
+        Price: `${formatNumber(price)} ${quote}`,
         Value: isBaseSize ?
-          `~${formatNumber(quoteAmount, 2)} ${quote}` :
-          `~${formatNumber(baseAmount, 8)} ${base}`,
+          `~${formatNumber(quoteAmount)} ${quote}` :
+          `~${formatNumber(baseAmount)} ${base}`,
         'Max Available': isBaseSize ?
-          `${formatNumber(maxSize, 8)} ${base}` :
-          `${formatNumber(maxSize, 2)} ${quote}`,
+          `${formatNumber(maxSize)} ${base}` :
+          `${formatNumber(maxSize)} ${quote}`,
         'Percentage Used': percentageUsed,
-        Mode: mode
+        Mode: details.mode
       };
     }
-    
     case 'PERP': {
+      const leverage = details.leverage || 1;  // Safe fallback for leverage
       const notionalValue = size * price;
-      const requiredMargin = notionalValue / (leverage || 1);
+      const requiredMargin = notionalValue / leverage;
       
       return {
-        Symbol: symbol,
-        'Position Size': `${formatNumber(size, 4)} contracts (1x = 1 ${base})`,
-        'Notional Value': `~${formatNumber(notionalValue, 2)} ${quote}`,
+        Symbol: sym,
+        'Position Size': `${formatNumber(size)} contracts (1x = 1 ${base})`,
+        'Notional Value': `~${formatNumber(notionalValue)} ${quote}`,
         Leverage: leverage ? `${leverage}x` : 'cross',
-        'Required Margin': `~${formatNumber(requiredMargin, 2)} ${quote}`,
-        Mode: mode
+        'Required Margin': `~${formatNumber(requiredMargin)} ${quote}`,
+        Mode: details.mode
       };
     }
-    
     case 'INV_PERP': {
       const contractValue = 100; // USD per contract
+      const leverage = details.leverage || 1;  // Safe fallback for leverage
       const notionalUsd = size * contractValue;
-      const btcMargin = (notionalUsd / price) / (leverage || 1);
+      const btcMargin = price ? (notionalUsd / price) / leverage : 0;
       
       return {
-        Symbol: symbol,
-        'Position Size': `${formatNumber(size, 4)} contracts (1x = ${contractValue} USD)`,
-        'Notional Value': `~${formatNumber(notionalUsd, 2)} USD`,
+        Symbol: sym,
+        'Position Size': `${formatNumber(size)} contracts (1x = ${contractValue} USD)`,
+        'Notional Value': `~${formatNumber(notionalUsd)} USD`,
         Leverage: leverage ? `${leverage}x` : 'cross',
-        'Required Margin': `~${formatNumber(btcMargin, 8)} ${base}`,
-        Mode: mode
+        'Required Margin': `~${formatNumber(btcMargin)} ${base}`,
+        Mode: details.mode
       };
     }
-    
     default:
       return details;
   }
@@ -1701,8 +1771,7 @@ function formatTradeLogMessage(type, action, details, position = null) {
     - Size: ${formatNumber(position.pos, 4)} contracts
     - Entry Price: ${formatNumber(position.avgPx, 2)} ${currency}
     - Mark Price: ${formatNumber(position.markPx, 2)} ${currency}
-    - PnL: ${formatNumber(position.pnl, 4)} ${currency}
-    - Leverage: ${position.lever}x`;
+    - PnL: ${formatNumber(position.pnl, 4)} ${currency}`;
   }
 
   const formattedDetails = formatTradeDetails(type.replace('_CLOSE', ''), details);
@@ -1751,7 +1820,7 @@ async function createLog(level, message, requestId, apiKey = '', env = null) {
  */
 async function createTradeExecutionSummary(result, symbol, requestId) {
   try {
-    const status = result.failed === 0 ? 'Complete' : 
+    const status = result.successful === result.successful + result.failed ? 'Complete' :
                   result.successful > 0 ? 'Partial Success' : 
                   'Failed';
     
