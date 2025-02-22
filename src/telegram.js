@@ -82,14 +82,13 @@ function formatTradeMessage({
   message += `ID: ${maskSensitiveData(requestId)}\n\n`;
   
   if (type === 'ERROR') {
-    message += `Errors (${totalAccounts} accounts):\n`;
-    const errorCounts = {};
-    errors.forEach(error => {
-      errorCounts[error] = (errorCounts[error] || 0) + 1;
+    message += `Failed Orders:\n`;
+    // Show each failed account with masked ID
+    failedAccounts.forEach((accountId, index) => {
+      const maskedId = accountId.slice(0, 4) + '...';
+      message += `• Account ${maskedId}: Trade partially failed\n`;
     });
-    Object.entries(errorCounts).forEach(([error, count]) => {
-      message += `• ${error}: ${count}\n`;
-    });
+    message += `Total affected: ${failedAccounts.length}/${totalAccounts} accounts`;
   } else {
     message += `Results (${totalAccounts} accounts):\n`;
     if (totalVolume) {

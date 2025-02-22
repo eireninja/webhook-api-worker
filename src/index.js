@@ -1462,19 +1462,17 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
           totalSuccessful++;
           totalSize += parseFloat(orderObj.order.sz || 0);
           createLog('TRADE', `Order executed successfully for account ${orderObj.order.accountId}`, requestId);
-          orderObj.success = true;  // Mark as successful
-          orderObj.error = null;    // Clear any error
+          allOrders[allOrders.indexOf(orderObj)].success = true;
         } else {
           totalFailed++;
-          createLog('ERROR', `Order execution failed for account ${orderObj.order.accountId}`, requestId);
-          orderObj.success = false;
-          orderObj.error = 'Order execution failed';
+          const errorMsg = result.data?.[0]?.sMsg || 'Unknown error';
+          createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Order failed: ${errorMsg}`, requestId);
+          allOrders[allOrders.indexOf(orderObj)].success = false;
         }
       } catch (error) {
-        createLog('ERROR', `Trade failed for account ${orderObj.order.accountId}: ${error.message}`, requestId);
+        createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Trade failed: ${error.message}`, requestId);
         totalFailed++;
-        orderObj.success = false;
-        orderObj.error = error.message;
+        allOrders[allOrders.indexOf(orderObj)].success = false;
       }
     }
 
@@ -1514,7 +1512,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         successCount: totalSuccessful,
         failedAccounts: allOrders.filter(o => !o.success).map(o => o.order.accountId),
         totalVolume: totalSize.toFixed(8),
-        errors: totalSuccessful === apiKeys.length ? [] : ['Trade partially failed'], // Only pass error if actually failed
+        errors: totalSuccessful === apiKeys.length ? [] : ['Trade partially failed'],
         closePosition: !!payload.closePosition  // Ensure boolean
       });
 
@@ -1824,15 +1822,20 @@ async function createTradeExecutionSummary(result, symbol, requestId) {
                   result.successful > 0 ? 'Partial Success' : 
                   'Failed';
     
-    const summary = [
-      `Trade Execution Summary for ${symbol}`,
-      `    Status: ${status}`,
-      `    Successful: ${result.successful}`,
-      `    Failed: ${result.failed}`,
-      `    Total Size: ${result.sz} contracts`
-    ].join('\n');
+    const summary = {
+      'Total Accounts': result.successful + result.failed,
+      'Successful Orders': result.successful,
+      'Failed Orders': result.failed,
+      'Total Size': result.sz,
+      Type: symbol.split('-')[1].toUpperCase(),
+      Symbol: symbol
+    };
 
-    await createLog(LOG_LEVEL.TRADE, summary, requestId);
+    await createLog(LOG_LEVEL.TRADE, formatTradeLogMessage(
+      'MULTI_ACCOUNT',
+      'Trade Summary',
+      summary
+    ), requestId);
   } catch (error) {
     await createLog(LOG_LEVEL.ERROR, 
       `Failed to create trade summary: ${error.message}`, 
