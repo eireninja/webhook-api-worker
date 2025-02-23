@@ -39,8 +39,8 @@ class WebhookApp(tk.Tk):
             "symbol_var": tk.StringVar(),
             "side_var": tk.StringVar(),
             "qty_var": tk.StringVar(),
-            "margin_mode_var": tk.StringVar(value="cross"),
-            "leverage_var": tk.StringVar(value="10"),
+            "margin_mode_var": tk.StringVar(value="isolated"),
+            "leverage_var": tk.StringVar(value="1"),
             "close_position_var": tk.BooleanVar()
         }
 
@@ -191,8 +191,8 @@ class WebhookApp(tk.Tk):
         else:
             self.margin_mode_dropdown.configure(state="readonly")
             self.leverage_dropdown.configure(state="readonly")
-            self.variables["margin_mode_var"].set("cross")
-            self.variables["leverage_var"].set("10")
+            self.variables["margin_mode_var"].set("isolated")
+            self.variables["leverage_var"].set("1")
 
     def on_close_position_toggle(self):
         is_closing = self.variables["close_position_var"].get()

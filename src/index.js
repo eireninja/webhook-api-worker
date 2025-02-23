@@ -1277,45 +1277,94 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
 async function placeOrder(orderData, credentials, requestId, env) {
   const path = '/api/v5/trade/order';
   const body = JSON.stringify(orderData);
+  const maxRetries = 3;
+  const baseDelay = 2000; // 2 second base delay to match OKX rate window
   
-  try {
-    const { headers } = await generateOkxRequest('POST', path, body, credentials);
-    const response = await fetch(`${OKX_API_URL}${path}`, {
-      method: 'POST',
-      headers,
-      body
-    });
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const { headers } = await generateOkxRequest('POST', path, body, credentials);
+      const response = await fetch(`${OKX_API_URL}${path}`, {
+        method: 'POST',
+        headers,
+        body
+      });
 
-    const data = await response.json();
-    await createLog(LOG_LEVEL.DEBUG, `Response: ${JSON.stringify(data)}`, requestId);
-    
-    if (data.data && data.data[0]) {
-      const result = data.data[0];
-      if (result.sCode === '0') {
-        await createLog(LOG_LEVEL.TRADE,
-          `Order successful: ${orderData.sz} contracts`,
+      const data = await response.json();
+      await createLog(LOG_LEVEL.DEBUG, `Response (attempt ${attempt + 1}): ${JSON.stringify(data)}`, requestId);
+      
+      // Check for rate limit errors
+      if (data.code === '50011' || data.code === '50061') {
+        // Calculate delay based on error type
+        const delay = data.code === '50061' 
+          ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
+          : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
+        
+        await createLog(LOG_LEVEL.WARN,
+          `Rate limit hit (${data.code}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
           requestId,
           credentials.apiKey
         );
-        return { successful: 1, failed: 0 };
-      } else {
-        await createLog(LOG_LEVEL.ERROR,
-          `Order failed: ${result.sMsg}`,
-          requestId,
-          credentials.apiKey
-        );
-        return { successful: 0, failed: 1 };
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
       }
+      
+      if (data.data && data.data[0]) {
+        const result = data.data[0];
+        if (result.sCode === '0') {
+          await createLog(LOG_LEVEL.TRADE,
+            `Order successful: ${orderData.sz} contracts`,
+            requestId,
+            credentials.apiKey
+          );
+          return { successful: 1, failed: 0 };
+        } else {
+          // Only retry on specific error codes
+          if ((result.sCode === '50011' || result.sCode === '50061') && attempt < maxRetries - 1) {
+            const delay = data.code === '50061' 
+              ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
+              : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
+            
+            await createLog(LOG_LEVEL.WARN,
+              `Order failed with retryable error: ${result.sMsg}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+              requestId,
+              credentials.apiKey
+            );
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          
+          await createLog(LOG_LEVEL.ERROR,
+            `Order failed: ${result.sMsg}`,
+            requestId,
+            credentials.apiKey
+          );
+          return { successful: 0, failed: 1, error: result.sMsg };
+        }
+      }
+      return { successful: 0, failed: 1, error: 'No response data' };
+    } catch (error) {
+      // Retry on network errors
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        await createLog(LOG_LEVEL.WARN,
+          `Network error: ${error.message}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+          requestId,
+          credentials.apiKey
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      await createLog(LOG_LEVEL.ERROR,
+        `Order placement failed after ${maxRetries} attempts: ${error.message}`,
+        requestId,
+        credentials.apiKey
+      );
+      return { successful: 0, failed: 1, error: error.message };
     }
-    return { successful: 0, failed: 1 };
-  } catch (error) {
-    await createLog(LOG_LEVEL.ERROR,
-      `Order placement failed: ${error.message}`,
-      requestId,
-      credentials.apiKey
-    );
-    return { successful: 0, failed: 1 };
   }
+  
+  return { successful: 0, failed: 1, error: 'Max retries exceeded' };
 }
 
 /**
@@ -1465,14 +1514,16 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
           allOrders[allOrders.indexOf(orderObj)].success = true;
         } else {
           totalFailed++;
-          const errorMsg = result.data?.[0]?.sMsg || 'Unknown error';
+          const errorMsg = result.error || 'Unknown error';
           createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Order failed: ${errorMsg}`, requestId);
           allOrders[allOrders.indexOf(orderObj)].success = false;
+          allOrders[allOrders.indexOf(orderObj)].error = errorMsg;
         }
       } catch (error) {
         createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Trade failed: ${error.message}`, requestId);
         totalFailed++;
         allOrders[allOrders.indexOf(orderObj)].success = false;
+        allOrders[allOrders.indexOf(orderObj)].error = error.message;
       }
     }
 
@@ -1506,7 +1557,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(o => o.order.accountId),
+        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ id: o.order.accountId, error: o.error })),
         totalVolume: totalSize.toFixed(8),
         errors: totalSuccessful === apiKeys.length ? [] : ['Trade partially failed'],
         closePosition: !!payload.closePosition  // Ensure boolean
@@ -1535,7 +1586,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(o => o.order.accountId),
+        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ id: o.order.accountId, error: o.error })),
         errors: [error.message],
         closePosition: !!payload.closePosition  // Ensure boolean
       });
