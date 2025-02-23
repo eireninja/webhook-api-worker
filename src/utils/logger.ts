@@ -65,18 +65,17 @@ interface AccountContext {
 export class Logger {
   private config: LogConfig;
 
-  constructor(config: LogConfig) {
+  constructor(config: LogConfig = { level: 'info' }) {
     // Override config level with environment variable if present
-    const envLogLevel = process?.env?.LOG_LEVEL || 'info';
+    const envLogLevel = process?.env?.LOG_LEVEL;
     
-    if (envLogLevel && Object.values(LOG_LEVEL).includes(envLogLevel as LogLevel)) {
-      this.config = {
-        ...config,
-        level: envLogLevel as LogLevel
-      };
-    } else {
-      this.config = config;
-    }
+    this.config = {
+      ...config,
+      // Only override level if env var is present and valid
+      level: envLogLevel && Object.values(LOG_LEVEL).includes(envLogLevel as LogLevel) 
+        ? envLogLevel as LogLevel 
+        : config.level
+    };
   }
 
   private formatError(error: Error): ErrorInfo {
@@ -172,9 +171,7 @@ export class Logger {
 
   private shouldLog(level: LogLevel): boolean {
     const levels: LogLevel[] = ['error', 'warn', 'info', 'debug', 'verbose'];
-    const currentIdx = levels.indexOf(this.config.level);
-    const targetIdx = levels.indexOf(level);
-    return targetIdx <= currentIdx;
+    return levels.indexOf(level) <= levels.indexOf(this.config.level);
   }
 
   /**

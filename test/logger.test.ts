@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Logger } from '../src/utils/logger';
 import { LogConfig } from '../src/types/config';
 
@@ -13,6 +13,12 @@ describe('Logger', () => {
       maskSensitiveData: true
     };
     logger = new Logger(config);
+    // Reset environment variables
+    delete process.env.LOG_LEVEL;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
   });
 
   it('should log info messages', () => {
@@ -237,6 +243,11 @@ describe('Logger', () => {
     logger.warn('Warning message', metadata);
     logger.info('Info message', metadata);
     logger.debug('Debug message', metadata);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalled();
 
     const errorLog = JSON.parse(errorSpy.mock.calls[0][0]);
     const warnLog = JSON.parse(warnSpy.mock.calls[0][0]);
