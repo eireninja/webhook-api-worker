@@ -1,0 +1,44 @@
+{
+  "name": "wrapper-api-worker",
+  "version": "1.0.0",
+  "description": "Exchange API wrapper for cryptocurrency trading",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "lint": "eslint . --ext .ts",
+    "clean": "rm -rf dist",
+    "test": "vitest run -c test/vitest.config.ts",
+    "test:watch": "vitest -c test/vitest.config.ts",
+    "test:coverage": "vitest run --coverage -c test/vitest.config.ts"
+  },
+  "keywords": [
+    "cryptocurrency",
+    "trading",
+    "exchange",
+    "api",
+    "wrapper"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^20.11.19",
+    "okx-api": "^1.5.1",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.1",
+    "@typescript-eslint/parser": "^7.0.1",
+    "@vitest/coverage-v8": "^1.3.1",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.5",
+    "ts-node": "^10.9.2",
+    "vitest": "^1.3.1",
+    "wrangler": "^3.28.1"
+  }
+}
