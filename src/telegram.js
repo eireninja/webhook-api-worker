@@ -21,6 +21,15 @@ function maskSensitiveData(text) {
 }
 
 /**
+ * Escapes special characters for Telegram MarkdownV2 format
+ * @private
+ */
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+}
+
+/**
  * Formats a trade execution message for Telegram
  * @param {Object} params Message parameters
  * @returns {Object|null} Formatted message object
@@ -32,60 +41,64 @@ function formatTradeMessage({
   totalAccounts,
   successCount,
   failedAccounts = [],
-  totalVolume,
   errors = [],
   pnl = null,
-  closePosition = false
+  closePosition = false,
+  leverage = 1,
+  marginMode = 'cash',
+  entryPrice = null
 }) {
   if (!symbol || !side || !requestId) {
     return null;
   }
   
-  // Clean and validate the errors array
-  errors = Array.isArray(errors)
-    ? errors.filter(e => typeof e === 'string' && e.trim() !== '')
-    : [];
-  
-  // Determine message type based on errors and closePosition flag
   let type = errors.length > 0 ? 'ERROR' : 'SUCCESS';
-  
-  // Check for closing position: either explicit CLOSE or sell with closePosition flag
-  if (!errors.length && (closePosition || side.toUpperCase() === 'CLOSE' || 
-      (side.toUpperCase() === 'SELL' && closePosition))) {
+  if (!errors.length && (closePosition || side.toUpperCase() === 'CLOSE')) {
     type = 'CLOSE';
     side = 'CLOSE';
   }
-  
+
   const icon = ICONS[type];
-  const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  
-  // Format heading with WEBHOOK-API prefix and uppercase action
-  let message = `${icon} WEBHOOK-API: ${symbol}: ${side.toUpperCase()}\n`;
-  message += `Time: ${time}\n`;
-  message += `ID: ${maskSensitiveData(requestId)}\n\n`;
+  let message = 'WEBHOOK\\-API\n\n';
   
   if (type === 'ERROR') {
-    message += `Failed Orders:\n`;
-    // Show each failed account with masked ID
-    failedAccounts.forEach((accountId, index) => {
-      const maskedId = accountId.slice(0, 4) + '...';
-      message += `• Account ${maskedId}: Trade partially failed\n`;
+    message += `${icon} ${failedAccounts.length}/${totalAccounts} orders failed for ${escapeMarkdown(symbol)}\n`;
+    message += `📊 Side: ${escapeMarkdown(side.toUpperCase())}\n`;
+    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
+    message += `👥 Accounts: ${totalAccounts}\n`;
+    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
+    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
+    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
+    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
+    
+    message += `\nFailed Orders:\n`;
+    failedAccounts.forEach((failedOrder) => {
+      const accountId = failedOrder.accountId || 'unknown';
+      const errorMsg = escapeMarkdown(failedOrder.error || errors[0] || 'Trade failed');
+      message += `• \`${accountId}\`: ${errorMsg}\n`;
     });
-    message += `Total affected: ${failedAccounts.length}/${totalAccounts} accounts`;
-  } else {
-    message += `Results (${totalAccounts} accounts):\n`;
-    if (totalVolume) {
-      message += `• Executed: ${totalVolume} total\n`;
-    }
-    message += `• Success: ${successCount} accounts\n`;
-    if (failedAccounts.length > 0) {
-      message += `• Failed: ${failedAccounts.length} accounts\n`;
-    }
-    // Add PnL for closing positions if available
-    if (type === 'CLOSE' && pnl !== null) {
+  } else if (type === 'CLOSE') {
+    message += `${icon} ${successCount}/${totalAccounts} positions closed for ${escapeMarkdown(symbol)}\n`;
+    message += `📊 Side: CLOSE\n`;
+    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
+    message += `👥 Accounts: ${totalAccounts}\n`;
+    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
+    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
+    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
+    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
+    if (pnl !== null) {
       const pnlPrefix = parseFloat(pnl) >= 0 ? '+' : '';
-      message += `• PnL: ${pnlPrefix}${pnl}\n`;
+      message += `💰 PnL: ${escapeMarkdown(pnlPrefix + pnl)}\n`;
     }
+  } else {
+    message += `${icon} ${successCount}/${totalAccounts} orders processed successfully for ${escapeMarkdown(symbol)}\n`;
+    message += `📊 Side: ${escapeMarkdown(side.toUpperCase())}\n`;
+    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
+    message += `👥 Accounts: ${totalAccounts}\n`;
+    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
+    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
+    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
+    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
   }
   
   return { type, message };
@@ -115,7 +128,7 @@ async function sendTelegramMessage(type, message, env) {
         body: JSON.stringify({
           chat_id: env.TELEGRAM_CHANNEL_ID,
           text: message,
-          parse_mode: 'Markdown',
+          parse_mode: 'MarkdownV2',
           disable_web_page_preview: true
         })
       }

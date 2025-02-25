@@ -50,6 +50,10 @@
   - Inverse perpetual futures
 - Individual order execution
 - Proper error handling
+- Rate Limits:
+  - Trade: 60 req/s (burst to 120)
+  - Account: 10 req/s
+  - Market Data: 20 req/s
 
 ### Telegram Integration
 - Webhook-based notifications
@@ -66,10 +70,14 @@
 - GitHub for repository hosting
 
 ### Testing
-- Local development environment
-- Webhook testing tools
-- Manual integration testing
-- Regular functionality verification
+- Mock server for API simulation
+- OKX-like rate limiting
+- Realistic error rates:
+  - Trade endpoints: 5%
+  - Other endpoints: 2%
+- Realistic latencies:
+  - Trade: 50-200ms
+  - Other: 20-100ms
 
 ## Security
 
@@ -80,9 +88,10 @@
 - Account ID masking in logs
 
 ### Rate Limiting
-- Basic implementation
-- Future enhancement planned
-- Per-account consideration
+- OKX-compliant implementation
+- Per-account tracking
+- Burst limit support
+- Retry-after header
 
 ## Architectural Decisions
 
@@ -99,10 +108,3 @@
 - Improved accountability
 - More reliable execution
 - Easier debugging
-
-### Future Considerations
-- WebSocket implementation
-- Enhanced rate limiting
-- Additional exchange support
-- Advanced parallel execution
-- Performance optimization

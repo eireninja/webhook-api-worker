@@ -2,18 +2,18 @@
 
 ## Overview
 
-The OKX Trading Webhook API is a high-performance, secure service built on Cloudflare Workers. It facilitates automated trading by processing webhook requests to execute trades across multiple accounts on the OKX exchange. The API supports spot trading, USDT perpetual futures, and inverse perpetual futures, with robust error handling and logging capabilities.
+The OKX Trading Webhook API is a high-performance, secure service built on Cloudflare Workers. It facilitates automated trading by processing webhook requests to execute trades across multiple accounts on the OKX exchange. The API supports spot trading, USDT perpetual futures, and inverse perpetual futures, with robust error handling, rate limiting, and logging capabilities.
 
 ## Features
 
-- **Multi-Account Support**: Execute trades across multiple accounts simultaneously.
+- **Multi-Account Support**: Execute trades across multiple accounts simultaneously with per-account rate limiting.
 - **Trade Types**: Supports spot trading, USDT perpetuals, and inverse perpetuals.
 - **Position Management**: Open and close positions with percentage-based sizing.
 - **Leverage Control**: Set custom leverage for perpetual futures trading.
 - **Market Orders**: Quick execution with market orders.
 - **Security**: Built-in security features and API key management.
 - **Logging**: Comprehensive logging with Telegram notifications for real-time monitoring.
-- **Rate Limiting**: Smart handling of OKX API rate limits for parallel execution.
+- **Rate Limiting**: OKX-compliant rate limits with burst support.
 - **Percentage-Based Trading**: Trade with exact percentages of your available balance.
 
 ## Architecture
@@ -30,7 +30,7 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 - **Payload Validation**: Ensures that incoming webhook requests contain all necessary fields and adhere to expected formats.
 - **Trade Execution**: Manages the logic for executing trades, including opening and closing positions for different trade types.
 - **Request Generation**: Handles the creation of signed requests for the OKX API, ensuring secure communication.
-- **Batch Order Placement**: Facilitates the submission of multiple orders in a single API call for efficiency.
+- **Rate Limiting**: Implements OKX-compliant rate limits (60/s trade, 10/s account, 20/s market data).
 
 ### Configuration
 
@@ -40,16 +40,32 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 ## Webhook Flow
 
 1. **Incoming Webhook Request**: Received from external systems, containing trade details such as symbol, type, quantity, and side.
-2. **Payload Validation**: Validates the request payload to ensure all required fields are present and correctly formatted.
-3. **Order Processing**: Transforms the validated payload into a batch order for the OKX API, calculating order sizes based on available resources.
-4. **API Interaction**: Sends the batch order to OKX, handling responses and logging outcomes.
-5. **Position Management**: Manages open and close operations for positions, ensuring accurate execution and reporting.
+2. **Authentication & Rate Check**: Validates authentication and checks rate limits.
+3. **Payload Validation**: Validates the request payload to ensure all required fields are present and correctly formatted.
+4. **Order Processing**: Transforms the validated payload into orders for the OKX API, calculating order sizes based on available resources.
+5. **Rate Limit Check**: Verifies endpoint-specific rate limits before execution.
+6. **API Interaction**: Sends orders to OKX, handling responses and logging outcomes.
+7. **Position Management**: Manages open and close operations for positions, ensuring accurate execution and reporting.
 
 ## Error Handling and Logging
 
 - **Validation Errors**: Caught early in the process, with detailed messages logged and sent via Telegram if configured.
 - **Trading Errors**: Includes checks for insufficient balance, invalid lot sizes, and leverage restrictions.
-- **API Errors**: Handles rate limits, authentication issues, and network errors, with comprehensive logging for all events.
+- **API Errors**: Handles rate limits (with retry-after), authentication issues, and network errors.
+- **Rate Limit Errors**: Returns 429 status with retry-after header when limits exceeded.
+
+## Rate Limiting
+
+### OKX API Limits
+- **Trade Endpoints**: 60 requests per second with burst up to 120
+- **Account/Position**: 10 requests per second
+- **Market Data**: 20 requests per second
+
+### Implementation
+- Per-account request tracking
+- Burst limit support for trade endpoints
+- Retry-after header on rate limit errors
+- Clean error messages and logging
 
 ## Environment Variables
 
@@ -99,7 +115,6 @@ The OKX Trading Webhook API provides a robust, scalable solution for automated t
 - Size returned in contracts
 
 ### Inverse Perpetuals
-- Fixed contract sizes ($100 USD for BTC-USD-SWAP)
 - Uses `/api/v5/account/max-size` endpoint
 - Size returned directly in contracts
 

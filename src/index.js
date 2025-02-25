@@ -1557,12 +1557,22 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ id: o.order.accountId, error: o.error })),
+        failedAccounts: allOrders.filter(o => !o.success).map(order => ({
+          accountId: order.order.accountId,
+          error: order.error
+        })),
         totalVolume: totalSize.toFixed(8),
         errors: totalSuccessful === apiKeys.length ? [] : ['Trade partially failed'],
-        closePosition: !!payload.closePosition  // Ensure boolean
+        closePosition: !!payload.closePosition,  // Ensure boolean
+        leverage: payload.leverage || 1,
+        marginMode: payload.marginMode || 'cash',
+        entryPrice: allOrders[0]?.order?.px || null,
+        pnl: null  // Simplest fix: just pass null for now
       });
-
+      const failedOrders = allOrders.filter(o => !o.success).map(order => ({
+        accountId: order.order.accountId,
+        error: order.error
+      }));
       if (telegramMsg) {
         await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
@@ -1588,9 +1598,15 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         successCount: totalSuccessful,
         failedAccounts: allOrders.filter(o => !o.success).map(o => ({ id: o.order.accountId, error: o.error })),
         errors: [error.message],
-        closePosition: !!payload.closePosition  // Ensure boolean
+        closePosition: !!payload.closePosition,  // Ensure boolean
+        leverage: payload.leverage || 1,
+        marginMode: payload.marginMode || 'cash',
+        entryPrice: allOrders[0]?.order?.px || null
       });
-
+      const failedOrders = allOrders.filter(o => !o.success).map(order => ({
+        accountId: order.order.accountId,
+        error: order.error
+      }));
       if (telegramMsg) {
         await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
