@@ -26,6 +26,3 @@ name = "webhook-api-development"
 [observability.logs]
 enabled = true
 
-[miniflare]
-kv_persist = true
-d1_persist = true

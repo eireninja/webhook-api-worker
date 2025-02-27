@@ -86,12 +86,33 @@
 - HMAC signature validation
 - API key encryption
 - Account ID masking in logs
+- Enhanced input validation for auth tokens
+- Proper error handling for authentication failures
+- Security headers implementation
+- Protection against timing attacks
+
+### Input Validation
+- Comprehensive validation for all request parameters
+- Type checking for incoming data
+- Range and format validation
+- Protection against injection attacks
+- Validation for all webhook payloads
+- Sanitization of user inputs
+
+### Data Protection
+- Sensitive data masking in logs and messages
+- API key secure storage using D1 database
+- Request ID masking in Telegram messages
+- Error message sanitization to prevent information disclosure
+- Protection against data leakage
 
 ### Rate Limiting
 - OKX-compliant implementation
 - Per-account tracking
 - Burst limit support
 - Retry-after header
+- Protection against brute force attacks
+- Rate limiting for authentication attempts
 
 ## Architectural Decisions
 

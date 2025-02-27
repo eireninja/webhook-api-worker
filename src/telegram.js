@@ -6,7 +6,9 @@
 const ICONS = {
   SUCCESS: '✅',
   ERROR: '❌',
-  CLOSE: '🏁'
+  CLOSE: '🏁',
+  PARTIAL_SUCCESS: '⚠️',
+  PARTIAL_CLOSE: '⚠️'
 };
 
 /**
@@ -17,7 +19,21 @@ function maskSensitiveData(text) {
   if (!text) return '';
   const length = text.length;
   if (length <= 8) return text;
-  return text.substring(0, 4) + '*'.repeat(length - 8) + text.substring(length - 4);
+  
+  // Always show first 4 and last 4 characters with exactly 4 asterisks in between
+  return text.substring(0, 4) + '****' + text.substring(length - 4);
+}
+
+/**
+ * Escapes special characters for HTML format
+ * @private
+ */
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
@@ -52,53 +68,105 @@ function formatTradeMessage({
     return null;
   }
   
-  let type = errors.length > 0 ? 'ERROR' : 'SUCCESS';
-  if (!errors.length && (closePosition || side.toUpperCase() === 'CLOSE')) {
+  // Determine message type based on success/failure counts
+  let type;
+  const isCloseOperation = closePosition || side.toUpperCase() === 'CLOSE';
+  
+  if (successCount === 0) {
+    // All orders failed
+    type = 'ERROR';
+  } else if (failedAccounts.length > 0) {
+    // Some orders succeeded, some failed (partial success)
+    type = isCloseOperation ? 'PARTIAL_CLOSE' : 'PARTIAL_SUCCESS';
+  } else if (isCloseOperation) {
+    // All orders succeeded and it was a close operation
     type = 'CLOSE';
+  } else {
+    // All orders succeeded and it was a regular trade
+    type = 'SUCCESS';
+  }
+  
+  // If it's a close operation, normalize the side
+  if (isCloseOperation) {
     side = 'CLOSE';
   }
 
-  const icon = ICONS[type];
-  let message = 'WEBHOOK\\-API\n\n';
-  
+  // Determine status text and emoji
+  let statusText, statusEmoji;
   if (type === 'ERROR') {
-    message += `${icon} ${failedAccounts.length}/${totalAccounts} orders failed for ${escapeMarkdown(symbol)}\n`;
-    message += `📊 Side: ${escapeMarkdown(side.toUpperCase())}\n`;
-    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
-    message += `👥 Accounts: ${totalAccounts}\n`;
-    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
-    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
-    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
-    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
-    
-    message += `\nFailed Orders:\n`;
-    failedAccounts.forEach((failedOrder) => {
-      const accountId = failedOrder.accountId || 'unknown';
-      const errorMsg = escapeMarkdown(failedOrder.error || errors[0] || 'Trade failed');
-      message += `• \`${accountId}\`: ${errorMsg}\n`;
-    });
+    statusText = "FAILED";
+    statusEmoji = "❌";
+  } else if (type === 'PARTIAL_SUCCESS' || type === 'PARTIAL_CLOSE') {
+    statusText = "PARTIAL SUCCESS";
+    statusEmoji = "⚠️";
   } else if (type === 'CLOSE') {
-    message += `${icon} ${successCount}/${totalAccounts} positions closed for ${escapeMarkdown(symbol)}\n`;
-    message += `📊 Side: CLOSE\n`;
-    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
-    message += `👥 Accounts: ${totalAccounts}\n`;
-    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
-    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
-    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
-    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
-    if (pnl !== null) {
-      const pnlPrefix = parseFloat(pnl) >= 0 ? '+' : '';
-      message += `💰 PnL: ${escapeMarkdown(pnlPrefix + pnl)}\n`;
-    }
+    statusText = "CLOSED";
+    statusEmoji = "✅";
   } else {
-    message += `${icon} ${successCount}/${totalAccounts} orders processed successfully for ${escapeMarkdown(symbol)}\n`;
-    message += `📊 Side: ${escapeMarkdown(side.toUpperCase())}\n`;
-    message += `⏰ Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}\n`;
-    message += `👥 Accounts: ${totalAccounts}\n`;
-    message += `🔍 Request ID: ${escapeMarkdown(maskSensitiveData(requestId))}\n`;
-    if (leverage > 1) message += `⚡ Leverage: ${leverage}x\n`;
-    message += `💵 Margin Mode: ${escapeMarkdown(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
-    if (entryPrice) message += `📈 Entry Price: $${entryPrice}\n`;
+    statusText = "SUCCESS";
+    statusEmoji = "✅";
+  }
+  
+  // Get local time with timezone information
+  const now = new Date();
+  const timeWithZone = now.toLocaleTimeString('en-US', { 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    hour12: false,
+    timeZoneName: 'short' 
+  });
+  
+  // Build the message - HTML format is much simpler to work with
+  let message = `<b>📢 WEBHOOK-API: TRADE EXECUTION ALERT!! 🚨 🚨 🚨 </b>\n\n`;
+  
+  // Add a dedicated action line with large text and bold action
+  message += `ACTION: <b>${escapeHtml(side.toUpperCase())}</b>\n`;
+  message += `PAIR: ${escapeHtml(symbol)}\n`;
+  message += `STATUS: ${statusText} ${statusEmoji}\n\n`;
+  
+  // Success/failure ratio
+  message += `✅ <b>${successCount}/${totalAccounts}</b> orders executed successfully\n`;
+  if (failedAccounts.length > 0) {
+    message += `❌ <b>${failedAccounts.length}/${totalAccounts}</b> orders failed\n`;
+  }
+  
+  // Details section
+  message += `\n📋 <b>DETAILS:</b>\n`;
+
+  message += `• ⏰ Time: ${timeWithZone}\n`;
+  message += `• 🔍 Request ID: <code>${escapeHtml(maskSensitiveData(requestId))}</code>\n`;
+  if (leverage > 1) message += `• 🚀 Leverage: ${leverage}x\n`;
+  message += `• 💵 Margin: ${escapeHtml(marginMode.charAt(0).toUpperCase() + marginMode.slice(1))}\n`;
+  
+  // Add PnL for close operations
+  if ((type === 'CLOSE' || type === 'PARTIAL_CLOSE') && pnl !== null) {
+    const pnlPrefix = parseFloat(pnl) >= 0 ? '+' : '';
+    message += `• PnL: ${escapeHtml(pnlPrefix + pnl)}\n`;
+  }
+  
+  // Show failures
+  if (failedAccounts && failedAccounts.length > 0) {
+    message += `\n❌ <b>FAILURES:</b>\n`;
+    failedAccounts.forEach((failedOrder) => {
+      const accountId = failedOrder.id || 'unknown';
+      const errorMsg = escapeHtml(failedOrder.error || errors[0] || 'Trade failed');
+      message += `• <code>${accountId}</code>: ${errorMsg}\n`;
+    });
+    
+    // Add action suggestions based on error patterns
+    message += `\n📝 <b>Action required:</b> `;
+    
+    // Look for common error patterns and suggest actions
+    const errorTexts = failedAccounts.map(fa => fa.error?.toLowerCase() || '');
+    if (errorTexts.some(e => e.includes('passphrase') || e.includes('credential') || e.includes('key'))) {
+      message += `Check API credentials for account(s) with authentication errors\n`;
+    } else if (errorTexts.some(e => e.includes('position'))) {
+      message += `Verify position exists before attempting to close\n`;
+    } else if (errorTexts.some(e => e.includes('balance') || e.includes('insufficient'))) {
+      message += `Check account balance is sufficient for this trade\n`;
+    } else {
+      message += `Review error details and take appropriate action\n`;
+    }
   }
   
   return { type, message };
@@ -128,7 +196,7 @@ async function sendTelegramMessage(type, message, env) {
         body: JSON.stringify({
           chat_id: env.TELEGRAM_CHANNEL_ID,
           text: message,
-          parse_mode: 'MarkdownV2',
+          parse_mode: 'HTML',
           disable_web_page_preview: true
         })
       }

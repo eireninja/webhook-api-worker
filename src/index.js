@@ -804,14 +804,12 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
     }
 
     // Return explicit success with size information
-    const markPrice = await getMarkPrice(instId, credentials);
     createLog('TRADE', formatTradeLogMessage(
       'SPOT',
       payload.side.toUpperCase(),
       {
         symbol: instId,
         size: orderSize,
-        price: markPrice,
         maxSize: maxQty,
         mode: 'cash',
         tgtCcy: isBuy ? 'base_ccy' : 'quote_ccy',
@@ -943,14 +941,12 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
-    const markPrice = await getMarkPrice(instId, credentials);
     createLog('TRADE', formatTradeLogMessage(
       'PERP',
       'Open Position',
       {
         symbol: instId,
         size: orderSize,
-        price: markPrice,
         maxSize: maxQty,
         mode: payload.marginMode,
         leverage: payload.leverage,
@@ -1030,14 +1026,13 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
-    const markPrice = await getMarkPrice(instId, credentials);
     createLog('TRADE', formatTradeLogMessage(
       'PERP_CLOSE',
       'Close Position',
       {
         symbol: instId,
         size: orderSize,
-        price: markPrice,
+        maxSize: maxQty,
         mode: payload.marginMode
       },
       position
@@ -1170,14 +1165,12 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
-    const markPrice = await getMarkPrice(instId, credentials);
     createLog('TRADE', formatTradeLogMessage(
       'INV_PERP',
       'Open Position',
       {
         symbol: instId,
         size: orderSize,
-        price: markPrice,
         maxSize: maxQty,
         mode: payload.marginMode,
         leverage: payload.leverage,
@@ -1247,14 +1240,13 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
 
     // Place single order
     const result = await placeOrder(orderData, credentials, requestId, env);
-    const markPrice = await getMarkPrice(instId, credentials);
     createLog('TRADE', formatTradeLogMessage(
       'INV_PERP_CLOSE',
       'Close Position',
       {
         symbol: instId,
         size: orderSize,
-        price: markPrice,
+        maxSize: maxQty,
         mode: payload.marginMode
       },
       position
@@ -1461,13 +1453,27 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         passphrase: account.passphrase
       };
 
-      // Validate credentials
-      if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-        createLog('ERROR', `Invalid credentials for account: missing required fields`, requestId);
-        totalFailed++;
-        continue;
-      }
-
+  // Validate credentials
+  if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+    const accountId = credentials.apiKey ? credentials.apiKey.substring(0, 4) : 'unknown';
+    const errorMsg = 'Invalid credentials: missing required fields';
+    createLog('ERROR', `${errorMsg} for account ${accountId}`, requestId);
+    
+    // Add failed order to allOrders for credential issues
+    allOrders.push({
+      success: false,
+      order: {
+        accountId,
+        symbol: payload.symbol
+      },
+      credentials,
+      error: errorMsg
+    });
+    
+    totalFailed++;
+    continue;
+  }
+  
       let result;
       try {
         // Prepare order based on trade type
@@ -1484,14 +1490,41 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         if (result && result.orderData) {
           // Add account info to order data for logging
           result.orderData.accountId = credentials.apiKey.substring(0, 4);
-          allOrders.push({ order: result.orderData, credentials });
+          allOrders.push({ order: result.orderData, credentials, success: true });
           createLog('TRADE', `Order prepared successfully for account ${result.orderData.accountId}`, requestId);
         } else {
-          throw new Error('Order preparation failed: no order data returned');
+          const accountId = credentials.apiKey.substring(0, 4);
+          const errorMsg = 'Order preparation failed: no order data returned';
+          createLog('ERROR', `Failed to prepare order for account ${accountId}: ${errorMsg}`, requestId);
+          
+          // Add failed order to allOrders
+          allOrders.push({
+            success: false,
+            order: {
+              accountId,
+              symbol: payload.symbol
+            },
+            credentials,
+            error: errorMsg
+          });
+          
+          totalFailed++;
         }
       } catch (error) {
         const accountId = credentials.apiKey.substring(0, 4);
         createLog('ERROR', `Failed to prepare order for account ${accountId}: ${error.message}`, requestId);
+        
+        // Add failed order to allOrders for proper tracking
+        allOrders.push({
+          success: false,
+          order: {
+            accountId,
+            symbol: payload.symbol
+          },
+          credentials,
+          error: error.message
+        });
+        
         totalFailed++;
       }
     }
@@ -1551,14 +1584,17 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
 
     // Send Telegram notification
     try {
+      const failedOrders = allOrders.filter(o => !o.success);
+      createLog('DEBUG', `Found ${failedOrders.length} failed orders for request ${requestId}`, requestId);
+      
       const telegramMsg = formatTradeMessage({
         symbol: payload.symbol,
         side: payload.closePosition ? 'CLOSE' : (payload.side || 'SELL'), // Set side explicitly for close positions
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(order => ({
-          accountId: order.order.accountId,
+        failedAccounts: failedOrders.map(order => ({
+          id: order.order.accountId,
           error: order.error
         })),
         totalVolume: totalSize.toFixed(8),
@@ -1569,10 +1605,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         entryPrice: allOrders[0]?.order?.px || null,
         pnl: null  // Simplest fix: just pass null for now
       });
-      const failedOrders = allOrders.filter(o => !o.success).map(order => ({
-        accountId: order.order.accountId,
-        error: order.error
-      }));
+      
       if (telegramMsg) {
         await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
@@ -1596,7 +1629,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ id: o.order.accountId, error: o.error })),
+        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ 
+          id: o.order.accountId, 
+          error: o.error 
+        })),
         errors: [error.message],
         closePosition: !!payload.closePosition,  // Ensure boolean
         leverage: payload.leverage || 1,
@@ -1604,7 +1640,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         entryPrice: allOrders[0]?.order?.px || null
       });
       const failedOrders = allOrders.filter(o => !o.success).map(order => ({
-        accountId: order.order.accountId,
+        id: order.order.accountId,
         error: order.error
       }));
       if (telegramMsg) {
