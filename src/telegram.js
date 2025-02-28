@@ -117,7 +117,7 @@ function formatTradeMessage({
   });
   
   // Build the message - HTML format is much simpler to work with
-  let message = `<b>📢 WEBHOOK-API: TRADE EXECUTION ALERT!! 🚨 🚨 🚨 </b>\n\n`;
+  let message = `<b>📢 🚨 🚨 🚨 WEBHOOK-API: TRADE EXECUTION ALERT!! 🚨 🚨 🚨 </b>\n\n`;
   
   // Add a dedicated action line with large text and bold action
   message += `ACTION: <b>${escapeHtml(side.toUpperCase())}</b>\n`;

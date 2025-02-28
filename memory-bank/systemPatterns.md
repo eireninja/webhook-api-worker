@@ -127,3 +127,33 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 - Uses sequential processing for multi-account trades to control request rate
 - Adds burst limit support with proper tracking
 - Includes Retry-After headers for rate limit responses
+
+## Comprehensive System Flow
+
+A detailed system flow diagram has been created to document all components, functions, and their relationships in the webhook API system. This diagram provides a visual representation of the entire request processing pipeline, from webhook receipt to trade execution, and includes all security layers, logging, API interactions, and error handling.
+
+### Main Request Flow
+- Webhook Request → Router/Handler → Security Validation → Process Webhook → Trade Execution
+
+### Security Validation Layers
+- IP Validation → Token Validation → Payload Validation
+
+### Trade Execution Flow
+- Execute Multi-Account Trades → Prepare Orders by Type → Execute Trade by Type → Place Orders → Aggregate Results
+
+### Spot Trade Execution Details
+- Format Trading Pair → Get Instrument Info → Fetch Max Size → Calculate Order Size → Round to Lot Size → Generate Client Order ID → Place Order
+
+### Order Placement
+- Generate OKX Request → Generate Signature → Sign Request → Handle Retry Logic
+
+### Logging Integration
+- All components integrate with the central logging system
+- Security events, trade execution, API interactions, and errors are logged with appropriate severity levels
+
+### Error Handling
+- Retry logic for transient errors
+- Comprehensive error logging
+- Standardized error responses
+
+This comprehensive flow documentation enhances understanding of the system architecture, making it easier to maintain and extend the codebase. It serves as a reference for developers working on the project and helps ensure that all components work together correctly.

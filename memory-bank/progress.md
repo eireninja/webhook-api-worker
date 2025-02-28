@@ -12,6 +12,8 @@
 - **Telegram Notifications**: Basic trade notifications via Telegram
 - **Logging**: Comprehensive logging system with security event tracking
 - **IP-Based Security**: Validation of incoming requests against TradingView IP whitelist
+- **System Documentation**: Comprehensive flow diagram documenting all system components and functions
+- **Spot Trading Optimization**: Improved handling of 100% sell orders to prevent leftover amounts (dust)
 
 ## What's Left to Build
 
@@ -19,7 +21,7 @@
 2. **Reimplementation of PnL Calculation**: Re-enable PnL calculations in notifications
 3. **Enhanced Error Handling**: Improve error handling and recovery mechanisms
 4. **Additional Security Features**: Implement remaining security enhancements (IP whitelist in env vars, CIDR support)
-5. **Documentation Improvements**: Update and expand documentation
+5. **Documentation Improvements**: Continue updating and expanding documentation
 6. **Testing Framework**: Develop comprehensive testing framework
 
 ## Current Status
@@ -30,12 +32,13 @@
 | Authentication | ✅ Complete | Multi-layered security with IP and token validation |
 | Payload Validation | ✅ Complete | Input validation in place |
 | Multi-Account Trading | ✅ Complete | Works across multiple accounts |
-| Spot Trading | ✅ Complete | Fully implemented |
+| Spot Trading | ✅ Complete | Fully implemented with dust prevention |
 | USDT Perpetual Futures | ✅ Complete | Fully implemented |
 | Inverse Perpetual Futures | ✅ Complete | Fully implemented |
 | Leverage Management | ✅ Complete | Can set leverage for futures |
 | Position Management | ✅ Complete | Can manage positions effectively |
 | IP-Based Security | ✅ Complete | Validates requests against TradingView IP whitelist |
+| System Documentation | ✅ Complete | Comprehensive flow diagram created |
 | Telegram Notifications | 🟡 Partial | Basic notifications working, PnL display disabled |
 | Error Handling | 🟡 Partial | Basic error handling in place, needs enhancement |
 | Rate Limiting | ✅ Complete | OKX-compliant implementation with burst support |

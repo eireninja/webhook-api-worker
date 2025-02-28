@@ -2,10 +2,12 @@
 
 ## Current Work Focus
 
-The current focus is on enhancing the security of the webhook API by implementing IP-based validation for incoming webhook requests. This security enhancement ensures that only requests from authorized TradingView IP addresses are processed, adding an additional layer of protection beyond the existing token-based authentication.
+The current focus is on optimizing the trading functionality and improving system documentation. This includes addressing issues with 100% sell orders to prevent leftover amounts (dust) after trades, and creating comprehensive system flow documentation to enhance understanding of the system architecture. These efforts build upon the recent security enhancements, including IP-based validation for incoming webhook requests.
 
 ## Recent Changes
 
+- **System Flow Documentation**: Created a comprehensive flow diagram documenting all components, functions, and their relationships in the webhook API system.
+- **Spot Trading Optimization**: Modified the `executeSpotTrade` function to handle 100% sell orders correctly by using the exact maxSell value without rounding, preventing leftover amounts after trades.
 - **IP-Based Validation**: Implemented IP validation as the first security check in the request processing pipeline, ensuring that only requests from whitelisted TradingView IP addresses are processed.
 - **Enhanced Security Logging**: Added comprehensive logging for both successful and failed IP validations, providing a clear audit trail for security monitoring.
 - **Rate Limiting Implementation**: Implemented OKX-compliant rate limiting (Trade: 60 req/s with burst to 120, Account: 10 req/s, Market data: 20 req/s).
@@ -14,10 +16,11 @@ The current focus is on enhancing the security of the webhook API by implementin
 
 ## Current Activities
 
+- Optimizing trading functionality to prevent leftover amounts after trades
+- Creating and maintaining comprehensive system documentation
 - Implementing and testing security enhancements for the webhook API
-- Reviewing the existing codebase to identify additional security improvements
-- Documenting the security architecture and implementation details
-- Optimizing individual order execution
+- Reviewing the existing codebase to identify additional optimization opportunities
+- Documenting the system architecture and implementation details
 - Fixing webpack async/await compatibility issues
 - Maintaining clean and precise logging
 
@@ -53,15 +56,15 @@ The current focus is on enhancing the security of the webhook API by implementin
 
 ## Next Steps
 
-1. Test the IP validation implementation with various scenarios to ensure it correctly blocks unauthorized IPs and allows authorized ones.
+1. Test the optimized spot trading functionality with various scenarios to ensure it correctly handles all trade types without leaving dust.
 
-2. Document the security architecture in the project documentation.
+2. Integrate the system flow diagram into the project documentation.
 
-3. Review the codebase for additional security enhancement opportunities.
+3. Review other trading functions for similar optimization opportunities.
 
-4. Fix webpack async/await compatibility issue.
+4. Test the IP validation implementation with various scenarios to ensure it correctly blocks unauthorized IPs and allows authorized ones.
 
-5. Test individual order execution reliability.
+5. Fix webpack async/await compatibility issue.
 
 6. Verify error handling across all accounts.
 
@@ -71,12 +74,14 @@ The current focus is on enhancing the security of the webhook API by implementin
 
 ## Current Questions and Clarifications Needed
 
-1. What is the specific nature of the Webpack compatibility issues with async/await?
+1. Are there other trading functions that could benefit from similar optimization to prevent leftover amounts?
 
-2. How was the PnL calculation implemented before it was disabled?
+2. What is the specific nature of the Webpack compatibility issues with async/await?
 
-3. Are there any undocumented features or behaviors in the codebase?
+3. How was the PnL calculation implemented before it was disabled?
 
-4. What additional security measures could be implemented to further protect the webhook API?
+4. Are there any undocumented features or behaviors in the codebase?
 
-5. Are there any performance implications of the added IP validation layer?
+5. What additional security measures could be implemented to further protect the webhook API?
+
+6. Are there any performance implications of the added IP validation layer?
