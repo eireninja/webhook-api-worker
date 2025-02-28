@@ -117,12 +117,12 @@ function formatTradeMessage({
   });
   
   // Build the message - HTML format is much simpler to work with
-  let message = `<b>📢 🚨 🚨 🚨 WEBHOOK-API: TRADE EXECUTION ALERT!! 🚨 🚨 🚨 </b>\n\n`;
+  let message = `<b>📢🚨TRADE EXECUTION ALERT!!🚨</b>\n\n`;
   
   // Add a dedicated action line with large text and bold action
-  message += `ACTION: <b>${escapeHtml(side.toUpperCase())}</b>\n`;
-  message += `PAIR: ${escapeHtml(symbol)}\n`;
-  message += `STATUS: ${statusText} ${statusEmoji}\n\n`;
+  message += `<b>⚡️ ACTION ➜➜</b> ${escapeHtml(side.toUpperCase())}\n`;
+  message += `<b>📈 PAIR ➜➜</b> ${escapeHtml(symbol)}\n`;
+  message += `<b>🔔 STATUS ➜➜</b> ${statusText} ${statusEmoji}\n\n`;
   
   // Success/failure ratio
   message += `✅ <b>${successCount}/${totalAccounts}</b> orders executed successfully\n`;
@@ -132,6 +132,7 @@ function formatTradeMessage({
   
   // Details section
   message += `\n📋 <b>DETAILS:</b>\n`;
+  message += `—————————————\n`;
 
   message += `• ⏰ Time: ${timeWithZone}\n`;
   message += `• 🔍 Request ID: <code>${escapeHtml(maskSensitiveData(requestId))}</code>\n`;

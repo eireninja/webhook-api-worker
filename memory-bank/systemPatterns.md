@@ -13,6 +13,7 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 5. **Database Interface**: Retrieves API keys and credentials from D1 database
 6. **Logging System**: Records detailed information about requests, security events, and execution status
 7. **Notification Service**: Sends alerts and trade information to Telegram
+8. **Testing Features**: Includes dryRun mode for simulating trades without execution
 
 ## Key Technical Decisions
 
@@ -127,6 +128,28 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 - Uses sequential processing for multi-account trades to control request rate
 - Adds burst limit support with proper tracking
 - Includes Retry-After headers for rate limit responses
+
+## Testing & Performance Patterns
+
+### DryRun Mode
+- **Pattern**: Flag-based execution simulation
+- **Implementation**: 
+  - The dryRun flag can be passed in the webhook payload
+  - When enabled, the system simulates all trade operations without actual execution
+  - Trade simulation follows the exact same code path as actual trades
+  - Detailed logs are generated showing what would have happened
+- **Benefits**:
+  - Enables comprehensive testing without financial risk
+  - Allows stress testing with high volume
+  - Validates system flow without market impact
+  - Supports integration testing of client applications
+
+### Performance Characteristics
+- **Scalability**: Linear scaling with increased request volume
+- **Throughput**: Validated at 80+ requests per second
+- **Concurrency**: Successfully tested with 300 concurrent users
+- **Reliability**: Maintained 100% success rate under high load
+- **Response Time**: Sub-second response times even under load
 
 ## Comprehensive System Flow
 

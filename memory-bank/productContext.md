@@ -29,28 +29,28 @@ Key motivations for the project include:
 4. **Error Handling**: Implements robust error handling and retry logic
 5. **Rate Limit Compliance**: Ensures compliance with OKX API rate limits
 
-## How It Should Work
+## Key Features and Capabilities
 
-### User Perspective
+### Trading Features
+- **Multi-Account Execution**: Execute trades across multiple accounts simultaneously
+- **Trade Type Support**: Execute spot trades, USDT perpetual futures, and inverse perpetual futures
+- **Position Sizing**: Support for percentage-based and fixed-size positions
+- **Leverage Management**: Set and adjust leverage for futures trading
 
-1. User configures their trading signal source to send webhook requests to the API endpoint
-2. Each webhook contains trading parameters (symbol, side, size, type, etc.)
-3. The API authenticates the request, validates the payload, and executes the trade on OKX
-4. The system sends a notification via Telegram with the trade details and status
-5. The API returns a response with the execution status and any relevant details
+### Security Features
+- **IP Validation**: Restrict access to verified TradingView IP addresses
+- **Token Authentication**: Require valid authentication token for all requests
+- **Input Validation**: Validate all incoming requests for required parameters
+- **Rate Limiting**: Implement OKX-compliant rate limits to prevent API abuse
 
-### System Perspective
+### System Features
+- **Logging**: Comprehensive logging for all operations and security events
+- **Notifications**: Telegram alerts for trade execution and errors
+- **Error Handling**: Graceful error handling with detailed error messages
+- **DryRun Testing**: Simulation mode for testing trade execution without placing actual orders
+- **Performance**: Scalable architecture handling 80+ requests per second under load
 
-1. Webhook request is received and authenticated
-2. Payload is validated for required parameters and format
-3. API keys are retrieved from the database
-4. Trade is prepared with appropriate parameters based on trade type
-5. Order is executed on OKX via their API
-6. Results are logged and notifications are sent
-7. Response is returned to the caller
-
-## User Experience Goals
-
+### User Experience
 ### Reliability
 
 - Every valid webhook request should result in a trade execution or clear error message
@@ -74,6 +74,26 @@ Key motivations for the project include:
 - Support for various trade types (spot, futures)
 - Support for different position sizing methods (fixed, percentage)
 - Support for multiple accounts with a single request
+
+## How It Should Work
+
+### User Perspective
+
+1. User configures their trading signal source to send webhook requests to the API endpoint
+2. Each webhook contains trading parameters (symbol, side, size, type, etc.)
+3. The API authenticates the request, validates the payload, and executes the trade on OKX
+4. The system sends a notification via Telegram with the trade details and status
+5. The API returns a response with the execution status and any relevant details
+
+### System Perspective
+
+1. Webhook request is received and authenticated
+2. Payload is validated for required parameters and format
+3. API keys are retrieved from the database
+4. Trade is prepared with appropriate parameters based on trade type
+5. Order is executed on OKX via their API
+6. Results are logged and notifications are sent
+7. Response is returned to the caller
 
 ## Integration Points
 

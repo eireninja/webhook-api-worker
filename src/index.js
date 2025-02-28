@@ -1289,6 +1289,12 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
  * @returns {Promise<Object>} Order result
  */
 async function placeOrder(orderData, credentials, requestId, env) {
+  // Check if this is a dry run by examining the orderData object
+  if (orderData.dryRun) {
+    await createLog(LOG_LEVEL.INFO, `DRY RUN: Would place order: ${JSON.stringify(orderData)}`, requestId, credentials.apiKey);
+    return { successful: 1, failed: 0, dryRun: true };
+  }
+  
   const path = '/api/v5/trade/order';
   const body = JSON.stringify(orderData);
   const maxRetries = 3;
@@ -1512,6 +1518,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         if (result && result.orderData) {
           // Add account info to order data for logging
           result.orderData.accountId = credentials.apiKey.substring(0, 4);
+          // Add dryRun flag to the order data if it exists in the payload
+          if (payload.dryRun) {
+            result.orderData.dryRun = true;
+          }
           allOrders.push({ order: result.orderData, credentials, success: true });
           createLog('TRADE', `Order prepared successfully for account ${result.orderData.accountId}`, requestId);
         } else {
@@ -2022,6 +2032,14 @@ router.post('/', async (request, env) => {
         env.BROKER_TAG_BYBIT : 
         'default';
 
+    // Check if this is a dry run
+    const isDryRun = !!payload.dryRun;
+    if (isDryRun) {
+      await createLog(LOG_LEVEL.INFO, `DRY RUN MODE: No actual trades will be executed`, requestId, null, env);
+      // Add dryRun flag to the payload which will propagate to all order objects
+      payload.dryRun = true;
+    }
+
     // Execute trades for all accounts
     const results = await executeMultiAccountTrades(
       payload, 
@@ -2032,10 +2050,11 @@ router.post('/', async (request, env) => {
     );
     
     return new Response(JSON.stringify({
-      message: `Processed ${results.successful} successful and ${results.failed} failed trades`,
+      message: `Processed ${results.successful} successful and ${results.failed} failed trades${isDryRun ? ' (DRY RUN)' : ''}`,
       requestId: requestId,
       successful: results.successful,
-      failed: results.failed
+      failed: results.failed,
+      dryRun: isDryRun
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }

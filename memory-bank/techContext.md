@@ -13,6 +13,8 @@
 - **Wrangler**: CLI tool for building and deploying Cloudflare Workers
 - **npm**: Package manager for JavaScript dependencies
 - **Git**: Version control system for code management
+- **k6**: Open-source load testing tool used for stress testing the API
+- **autocannon**: Node.js-based HTTP benchmarking tool for performance testing
 
 ### External Services
 - **OKX Trading API**: Exchange API for executing trades and retrieving market data

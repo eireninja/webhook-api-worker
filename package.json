@@ -10,7 +10,11 @@
   },
   "dependencies": {
     "itty-router": "^4.0.0",
-    "node-fetch": "^3.0.0"
+    "node-fetch": "^3.0.0",
+    "webpack-cli": "^5.1.4",
+    "webpack": "^5.98.0"
+
+
   },
   "devDependencies": {
     "webpack": "^5.98.0",

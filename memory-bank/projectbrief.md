@@ -12,12 +12,15 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 - Control leverage settings for futures trading
 - Place market orders with automatic price discovery
 - Provide comprehensive logging and notifications
+- Support testing mode with dry run capabilities for order validation
 
 ### Non-Functional Requirements
 - **Security**: Implement robust authentication, input validation, and data protection
 - **Performance**: Optimize for low latency to ensure timely trade execution
-- **Reliability**: Include retries and error handling for resilient operation
-- **Scalability**: Support trading across multiple accounts with rate limiting compliance
+- **Reliability**: Ensure consistent operation and proper error handling
+- **Scalability**: Handle high request volumes during market volatility
+- **Testing**: Support comprehensive testing with simulated trade execution
+- **Observability**: Provide detailed logging and performance metrics
 
 ## Project Goals
 1. Provide a secure and efficient webhook API for automated trading on OKX
