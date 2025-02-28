@@ -1,0 +1,36 @@
+# Memory Bank Rules for OKX Trading Webhook API Project
+
+## File Structure
+- Keep all Memory Bank files in the memory-bank/ directory
+- Maintain journal entries in memory-bank/journal/ directory
+- Use ISO date format (YYYY_MM_DD) for journal entry filenames
+- Include descriptive suffixes for journal entries (e.g., 2025_02_28_feature_implementation.md)
+
+## Content Guidelines
+- Keep documentation concise and focused
+- Update activeContext.md as work focus changes
+- Record all significant code changes in journal entries
+- Update progress.md when features are completed or issues are resolved
+- Document known issues and their current status
+
+## Maintenance Schedule
+- Create a new journal entry for each major coding session
+- Update activeContext.md at the start of each new task
+- Review and update progress.md weekly or after major milestones
+- Revisit projectbrief.md if project scope changes
+
+## Documentation Practices
+- Use markdown formatting consistently
+- Include code examples where helpful
+- Document both implementation details and design decisions
+- Update dependencies in techContext.md when they change
+- Document API changes thoroughly
+
+## Update Criteria
+- Update Memory Bank when:
+  - New features are implemented
+  - Bugs are fixed
+  - Project direction changes
+  - New dependencies are added
+  - Architecture is modified
+  - Significant refactoring occurs

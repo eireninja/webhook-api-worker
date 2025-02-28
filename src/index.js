@@ -14,6 +14,28 @@ import { formatTradeMessage, sendTelegramMessage } from './telegram.js';
 const router = Router();
 const OKX_API_URL = 'https://www.okx.com';  
 
+
+//=============================================================================
+// [SECURITY] Security Functions
+//=============================================================================
+
+/**
+ * Validates if the client IP is in the TradingView whitelist
+ * @param {string} clientIp - Client IP address
+ * @returns {boolean} True if IP is allowed, false otherwise
+ */
+function isAllowedIp(clientIp) {
+  const allowedIps = [
+    '52.89.214.238',
+    '34.212.75.30',
+    '54.218.53.128',
+    '52.32.178.7',
+    '91.148.238.131'
+  ];
+  
+  return allowedIps.includes(clientIp);
+}
+
 //=============================================================================
 // [VALIDATION] Input Validation Functions
 //=============================================================================
@@ -1473,7 +1495,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     totalFailed++;
     continue;
   }
-  
+
       let result;
       try {
         // Prepare order based on trade type
@@ -1939,22 +1961,109 @@ async function logTradeOperation(operation, position, requestId, apiKey) {
 //=============================================================================
 
 /**
- * Health check endpoint handler
- * @returns {Response} Health check response
+ * Main webhook endpoint handler
+ * @returns {Response} Webhook processing response
  */
-router.get('/', async (request) => {
+router.post('/', async (request, env) => {
+  const requestId = crypto.randomUUID();
+  const clientIp = request.headers.get('cf-connecting-ip');
+  
+  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
+  
+  // IP validation as the first step before any processing
+  const ipAllowed = isAllowedIp(clientIp);
+  
+  // Log the IP validation result
+  await createLog(
+    ipAllowed ? LOG_LEVEL.INFO : LOG_LEVEL.ERROR,
+    `IP validation ${ipAllowed ? 'passed' : 'failed'}: ${clientIp}`,
+    requestId,
+    null,
+    env
+  );
+  
+  if (!ipAllowed) {
+    // Log additional security details
+    await createLog(LOG_LEVEL.ERROR, 
+      `Security alert: Unauthorized access attempt from IP: ${clientIp}, User-Agent: ${request.headers.get('user-agent')}`,
+      requestId,
+      null,
+      env
+    );
+    
+    return new Response(JSON.stringify({
+      status: 'error',
+      message: 'Forbidden: IP not authorized',
+      requestId
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
   try {
-    const health = await generateHealthCheck();
-    return new Response(JSON.stringify(health), {
-      status: health.status === 'healthy' ? 200 : 
-              health.status === 'degraded' ? 206 : 500,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache'
-      }
+    const payload = await request.json();
+    await createLog(LOG_LEVEL.INFO, `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
+    
+    // Token validation as the second step
+    validateAuthToken(payload, env);
+
+    // Validate payload
+    validatePayload(payload);
+
+    // Get API keys from database
+    const apiKeys = await getApiKeys(env, requestId, payload.exchange);
+    await createLog(LOG_LEVEL.INFO, `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
+    
+    // Select broker tag based on exchange
+    const brokerTag = payload.exchange.toLowerCase() === 'okx' ? 
+      env.BROKER_TAG_OKX : 
+      payload.exchange.toLowerCase() === 'bybit' ? 
+        env.BROKER_TAG_BYBIT : 
+        'default';
+
+    // Execute trades for all accounts
+    const results = await executeMultiAccountTrades(
+      payload, 
+      apiKeys, 
+      brokerTag,
+      requestId,
+      env
+    );
+    
+    return new Response(JSON.stringify({
+      message: `Processed ${results.successful} successful and ${results.failed} failed trades`,
+      requestId: requestId,
+      successful: results.successful,
+      failed: results.failed
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    return handleError(error);
+    await createLog(LOG_LEVEL.ERROR, `Error: ${error.message}`, requestId, null, env);
+    
+    // Add specific handling for auth errors
+    if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
+      return new Response(JSON.stringify({
+        status: 'error',
+        message: 'Unauthorized',
+        requestId
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    return new Response(JSON.stringify({
+      error: error.message,
+      requestId: requestId,
+      timestamp: new Date().toISOString(),
+      details: DEBUG ? error.stack : undefined
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 });
 
