@@ -16,10 +16,6 @@ database_name = "oauth-prod-db"
 database_id = "ec5e69e9-6a3b-4e43-b825-c78413e6bee2"
 preview_database_id = "ec5e69e9-6a3b-4e43-b825-c78413e6bee2"
 
-[[env.production.kv_namespaces]]
-binding = "AUTH_STORAGE_PROD"
-id = "d4613ceacadf43969a1285671d549748"
-
 [env.development]
 name = "webhook-api-development"
 
