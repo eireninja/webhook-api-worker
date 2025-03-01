@@ -14,7 +14,6 @@ import { formatTradeMessage, sendTelegramMessage } from './telegram.js';
 const router = Router();
 const OKX_API_URL = 'https://www.okx.com';  
 
-
 //=============================================================================
 // [SECURITY] Security Functions
 //=============================================================================
@@ -389,6 +388,89 @@ function getExchangeCredentials(exchange, env) {
 //=============================================================================
 
 /**
+ * Makes a request to OKX API with automatic retry and rate limiting handling
+ * @param {string} method - HTTP method (GET, POST, etc.)
+ * @param {string} path - API endpoint path
+ * @param {string} body - Request body for POST requests
+ * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
+ * @param {Object} options - Additional options
+ * @returns {Promise<Object>} API response
+ */
+async function makeOkxApiRequest(method, path, body, credentials, requestId, options = {}) {
+  const maxRetries = options.maxRetries || 3;
+  const baseDelay = options.baseDelay || 2000;
+  const rateLimitCodes = ['50011', '50061'];
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const { headers } = await generateOkxRequest(method, path, body, credentials);
+      
+      const requestOptions = {
+        method,
+        headers
+      };
+      
+      if (body && method !== 'GET') {
+        requestOptions.body = body;
+      }
+      
+      const url = `${OKX_API_URL}${path}`;
+      const response = await fetch(url, requestOptions);
+      const data = await response.json();
+      
+      // Check for rate limit errors
+      if (rateLimitCodes.includes(data.code)) {
+        const delay = data.code === '50061'
+          ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
+          : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
+        
+        await createLog(LOG_LEVEL.WARN,
+          `Rate limit hit (${data.code}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+          requestId,
+          credentials?.apiKey
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      // Check for other errors in sub-data
+      if (data.data && data.data[0] && rateLimitCodes.includes(data.data[0].sCode) && attempt < maxRetries - 1) {
+        const delay = data.data[0].sCode === '50061'
+          ? baseDelay * Math.pow(2, attempt)
+          : baseDelay * Math.pow(1.5, attempt);
+        
+        await createLog(LOG_LEVEL.WARN,
+          `API request failed with retryable error: ${data.data[0].sMsg}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+          requestId,
+          credentials?.apiKey
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      return data;
+    } catch (error) {
+      // Retry on network errors
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        await createLog(LOG_LEVEL.WARN,
+          `Network error: ${error.message}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+          requestId,
+          credentials?.apiKey
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      throw error;
+    }
+  }
+  
+  throw new Error('Max retries exceeded');
+}
+
+/**
  * Generates common OKX request headers and signature
  * @param {string} method - HTTP method
  * @param {string} path - API endpoint path
@@ -593,22 +675,21 @@ async function getAccountBalance(credentials, requestId) {
  * @param {Object} credentials - API credentials
  * @returns {Promise<Object>} Instrument details
  */
-async function getInstrumentInfo(instId, credentials) {
-  // Removed duplicate logging here to prevent duplicate log entries.
+async function getInstrumentInfo(instId, credentials, requestId) {
+  createLog('TRADE', 'Getting instrument info');
   const path = '/api/v5/public/instruments';
   const queryParams = `?instType=${instId.includes('-SWAP') ? 'SWAP' : 'SPOT'}&instId=${instId}`;
   
   try {
-    const response = await fetch(`https://www.okx.com${path}${queryParams}`);
-    const data = await response.json();
+    const data = await makeOkxApiRequest('GET', `${path}${queryParams}`, '', credentials, requestId);
     
-    if (!response.ok || !data.data || !data.data[0]) {
-      throw new Error(`Failed to get instrument info: ${JSON.stringify(data)}`);
+    if (!data.data || !data.data[0]) {
+      throw new Error(`No instrument data found for ${instId}`);
     }
     
     return data.data[0];
   } catch (error) {
-    createLog('API', `Failed to get instrument info: ${error.message}`);
+    createLog('API', `Failed to get instrument info: ${error.message}`, requestId);
     throw error;
   }
 }
@@ -673,33 +754,24 @@ async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
     createLog('TRADE', `Using ${tdMode} margin with ${posSide} position`, requestId);
   }
 
-  const { headers } = await generateOkxRequest(
-    'GET',
-    path + queryParams,
-    '',
-    credentials
-  );
-
-  createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
-  const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
-  const data = await response.json();
-  
-  createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
-  
-  if (data.code !== '0') {
-    throw new Error(JSON.stringify(data));
+  try {
+    const data = await makeOkxApiRequest('GET', `${path}${queryParams}`, '', credentials, requestId);
+    
+    const maxBuy = data.data?.[0]?.maxBuy;
+    const maxSell = data.data?.[0]?.maxSell;
+    
+    if (!maxBuy || !maxSell) {
+      throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
+    }
+    
+    createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy} contracts, Sell=${maxSell} contracts`, requestId);
+    return { maxBuy, maxSell };
+  } catch (error) {
+    createLog('API', `Failed to get max size: ${error.message}`, requestId);
+    throw error;
   }
-
-  const maxBuy = data.data?.[0]?.maxBuy;
-  const maxSell = data.data?.[0]?.maxSell;
-  
-  if (!maxBuy || !maxSell) {
-    throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
-  }
-
-  createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy} contracts, Sell=${maxSell} contracts`, requestId);
-  return { maxBuy, maxSell };
 }
+
 
 //=============================================================================
 // [TRADE] Trade Execution Functions
@@ -1297,94 +1369,37 @@ async function placeOrder(orderData, credentials, requestId, env) {
   
   const path = '/api/v5/trade/order';
   const body = JSON.stringify(orderData);
-  const maxRetries = 3;
-  const baseDelay = 2000; // 2 second base delay to match OKX rate window
   
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const { headers } = await generateOkxRequest('POST', path, body, credentials);
-      const response = await fetch(`${OKX_API_URL}${path}`, {
-        method: 'POST',
-        headers,
-        body
-      });
-
-      const data = await response.json();
-      await createLog(LOG_LEVEL.DEBUG, `Response (attempt ${attempt + 1}): ${JSON.stringify(data)}`, requestId);
-      
-      // Check for rate limit errors
-      if (data.code === '50011' || data.code === '50061') {
-        // Calculate delay based on error type
-        const delay = data.code === '50061' 
-          ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
-          : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
-        
-        await createLog(LOG_LEVEL.WARN,
-          `Rate limit hit (${data.code}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+  try {
+    const data = await makeOkxApiRequest('POST', path, body, credentials, requestId);
+    
+    if (data.data && data.data[0]) {
+      const result = data.data[0];
+      if (result.sCode === '0') {
+        await createLog(LOG_LEVEL.TRADE,
+          `Order successful: ${orderData.sz} contracts`,
           requestId,
           credentials.apiKey
         );
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      
-      if (data.data && data.data[0]) {
-        const result = data.data[0];
-        if (result.sCode === '0') {
-          await createLog(LOG_LEVEL.TRADE,
-            `Order successful: ${orderData.sz} contracts`,
-            requestId,
-            credentials.apiKey
-          );
-          return { successful: 1, failed: 0 };
-        } else {
-          // Only retry on specific error codes
-          if ((result.sCode === '50011' || result.sCode === '50061') && attempt < maxRetries - 1) {
-            const delay = data.code === '50061' 
-              ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
-              : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
-            
-            await createLog(LOG_LEVEL.WARN,
-              `Order failed with retryable error: ${result.sMsg}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
-              requestId,
-              credentials.apiKey
-            );
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
-          }
-          
-          await createLog(LOG_LEVEL.ERROR,
-            `Order failed: ${result.sMsg}`,
-            requestId,
-            credentials.apiKey
-          );
-          return { successful: 0, failed: 1, error: result.sMsg };
-        }
-      }
-      return { successful: 0, failed: 1, error: 'No response data' };
-    } catch (error) {
-      // Retry on network errors
-      if (attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        await createLog(LOG_LEVEL.WARN,
-          `Network error: ${error.message}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+        return { successful: 1, failed: 0 };
+      } else {
+        await createLog(LOG_LEVEL.ERROR,
+          `Order failed: ${result.sMsg}`,
           requestId,
           credentials.apiKey
         );
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
+        return { successful: 0, failed: 1, error: result.sMsg };
       }
-      
-      await createLog(LOG_LEVEL.ERROR,
-        `Order placement failed after ${maxRetries} attempts: ${error.message}`,
-        requestId,
-        credentials.apiKey
-      );
-      return { successful: 0, failed: 1, error: error.message };
     }
+    return { successful: 0, failed: 1, error: 'No response data' };
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR,
+      `Order placement failed: ${error.message}`,
+      requestId,
+      credentials.apiKey
+    );
+    return { successful: 0, failed: 1, error: error.message };
   }
-  
-  return { successful: 0, failed: 1, error: 'Max retries exceeded' };
 }
 
 /**
@@ -1970,15 +1985,13 @@ async function logTradeOperation(operation, position, requestId, apiKey) {
 // [ROUTER] API Route Handlers
 //=============================================================================
 
-/**
- * Main webhook endpoint handler
- * @returns {Response} Webhook processing response
- */
-router.post('/', async (request, env) => {
+// IP validation middleware - MUST BE FIRST!
+router.all('*', async (request, env) => {
   const requestId = crypto.randomUUID();
   const clientIp = request.headers.get('cf-connecting-ip');
   
-  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
+  // Log the incoming request
+  await createLog(LOG_LEVEL.INFO, `Received request from ${clientIp}`, requestId, null, env);
   
   // IP validation as the first step before any processing
   const ipAllowed = isAllowedIp(clientIp);
@@ -2011,6 +2024,20 @@ router.post('/', async (request, env) => {
     });
   }
   
+  // If IP is allowed, continue to the next handler
+  return null;
+});
+
+/**
+ * Main webhook endpoint handler
+ * @returns {Response} Webhook processing response
+ */
+router.post('/', async (request, env) => {
+  const requestId = crypto.randomUUID();
+  const clientIp = request.headers.get('cf-connecting-ip');
+  
+  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
+    
   try {
     const payload = await request.json();
     await createLog(LOG_LEVEL.INFO, `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
@@ -2055,88 +2082,6 @@ router.post('/', async (request, env) => {
       successful: results.successful,
       failed: results.failed,
       dryRun: isDryRun
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    await createLog(LOG_LEVEL.ERROR, `Error: ${error.message}`, requestId, null, env);
-    
-    // Add specific handling for auth errors
-    if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
-      return new Response(JSON.stringify({
-        status: 'error',
-        message: 'Unauthorized',
-        requestId
-      }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    return new Response(JSON.stringify({
-      error: error.message,
-      requestId: requestId,
-      timestamp: new Date().toISOString(),
-      details: DEBUG ? error.stack : undefined
-    }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-});
-
-/**
- * Favicon handler
- * @returns {Response} Favicon response
- */
-router.get('/favicon.ico', () => new Response(null, { status: 204 }));
-
-/**
- * Main webhook endpoint handler
- * @returns {Response} Webhook processing response
- */
-router.post('/', async (request, env) => {
-  const requestId = crypto.randomUUID();
-  const clientIp = request.headers.get('cf-connecting-ip');
-  
-  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
-  
-  try {
-    const payload = await request.json();
-    await createLog(LOG_LEVEL.INFO, `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
-    
-    // Token validation as the first step
-    validateAuthToken(payload, env);
-
-    // Validate payload
-    validatePayload(payload);
-
-    // Get API keys from database
-    const apiKeys = await getApiKeys(env, requestId, payload.exchange);
-    await createLog(LOG_LEVEL.INFO, `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
-    
-    // Select broker tag based on exchange
-    const brokerTag = payload.exchange.toLowerCase() === 'okx' ? 
-      env.BROKER_TAG_OKX : 
-      payload.exchange.toLowerCase() === 'bybit' ? 
-        env.BROKER_TAG_BYBIT : 
-        'default';
-
-    // Execute trades for all accounts
-    const results = await executeMultiAccountTrades(
-      payload, 
-      apiKeys, 
-      brokerTag,
-      requestId,
-      env
-    );
-    
-    return new Response(JSON.stringify({
-      message: `Processed ${results.successful} successful and ${results.failed} failed trades`,
-      requestId: requestId,
-      successful: results.successful,
-      failed: results.failed
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }

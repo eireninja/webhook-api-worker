@@ -5,230 +5,236 @@ This document provides a comprehensive overview of the webhook API system archit
 ## System Flow Diagram
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': { 'primaryColor': '#f9f9f9', 'primaryTextColor': '#000', 'primaryBorderColor': '#333', 'lineColor': '#666', 'fontSize': '16px'}}}%%
 flowchart TD
-    %% Main Request Flow
-    WebhookRequest[Webhook Request] --> Router[fetch Event Handler]
-    Router --> IsAllowedIP[isAllowedIp]
-    IsAllowedIP --> ValidateAuthToken[validateAuthToken]
-    ValidateAuthToken --> ProcessWebhook[processWebhook]
+    %% Define main components with clear labels
+    WebhookRequest["🔔 Webhook Request"]
+    Router["📡 Router"]
+    IPMiddleware["🛡️ IP Validation Middleware"]
+    TokenAuth["🔑 Token Authentication"]
+    ProcessWH["⚙️ Process Webhook"]
     
-    %% Main Processing
-    ProcessWebhook --> ParsePayload[parsePayload]
-    ParsePayload --> ValidatePayload[validatePayload]
-    ValidatePayload --> FetchAPIKeys[fetchApiKeys]
-    FetchAPIKeys --> ExecuteMultiAccountTrades[executeMultiAccountTrades]
+    %% Main Request Flow - clearer, sequential
+    WebhookRequest --> Router
+    Router --> IPMiddleware
     
-    %% Multi-Account Trade Execution
-    ExecuteMultiAccountTrades --> PrepareOrders[Prepare Orders]
-    PrepareOrders --> ExecuteTrade[executeTrade]
-    
-    %% Trade Type Router
-    ExecuteTrade -->|type=spot| ExecuteSpotTrade[executeSpotTrade]
-    ExecuteTrade -->|type=perps| ExecutePerpsOrder[executePerpsOrder]
-    ExecuteTrade -->|type=invperps| ExecuteInvPerpsOrder[executeInvPerpsOrder]
-    
-    %% Spot Trade Execution
-    ExecuteSpotTrade --> FormatTradingPair[formatTradingPair]
-    ExecuteSpotTrade --> GetInstrumentInfo[getInstrumentInfo]
-    ExecuteSpotTrade --> FetchMaxSize[fetchMaxSize]
-    ExecuteSpotTrade --> CalculateOrderSize[calculateOrderSize]
-    CalculateOrderSize --> RoundToLotSize[roundToLotSize]
-    ExecuteSpotTrade --> GenerateClOrdId[generateClOrdId]
-    ExecuteSpotTrade --> PlaceOrder[placeOrder]
-    ExecuteSpotTrade --> FormatTradeLogMessage[formatTradeLogMessage]
-    
-    %% Perps Trade Execution
-    ExecutePerpsOrder --> FormatTradingPair
-    ExecutePerpsOrder --> GetInstrumentInfo
-    ExecutePerpsOrder --> FetchMaxSize
-    ExecutePerpsOrder --> CalculateOrderSize
-    ExecutePerpsOrder --> GenerateClOrdId
-    ExecutePerpsOrder --> PlaceOrder
-    ExecutePerpsOrder --> FormatTradeLogMessage
-    
-    %% InvPerps Trade Execution
-    ExecuteInvPerpsOrder --> FormatTradingPair
-    ExecuteInvPerpsOrder --> GetInstrumentInfo
-    ExecuteInvPerpsOrder --> FetchMaxSize
-    ExecuteInvPerpsOrder --> CalculateOrderSize
-    ExecuteInvPerpsOrder --> GenerateClOrdId
-    ExecuteInvPerpsOrder --> PlaceOrder
-    ExecuteInvPerpsOrder --> FormatTradeLogMessage
-    
-    %% Order Placement
-    PlaceOrder --> GenerateOkxRequest[generateOkxRequest]
-    GenerateOkxRequest --> GenerateSignature[generateSignature]
-    GenerateOkxRequest --> GenerateTimestamp[generateTimestamp]
-    PlaceOrder --> HandleRetry[handleRetry]
-    
-    %% API Interaction Functions
-    FetchMaxSize --> GenerateOkxRequest
-    GetInstrumentInfo --> GenerateOkxRequest
-    GetInstrumentInfo --> CacheInstrumentInfo[cacheInstrumentInfo]
-    
-    %% Notification System
-    ExecuteMultiAccountTrades --> SendNotifications[sendNotifications]
-    SendNotifications --> FormatTradeMessage[formatTradeMessage]
-    SendNotifications --> SendTelegramAlert[sendTelegramAlert]
-    SendTelegramAlert --> EscapeHtml[escapeHtml]
-    
-    %% Logging System
-    subgraph LoggingSystem[Logging System]
-        CreateLog[createLog]
-        FormatLogMessage[formatLogMessage]
-        CreateLog --> FormatLogMessage
-        FormatLogMessage --> LogToConsole[console.log]
-        
-        %% Log connections from various components
-        IsAllowedIP -.-> CreateLog
-        ValidateAuthToken -.-> CreateLog
-        ProcessWebhook -.-> CreateLog
-        ExecuteMultiAccountTrades -.-> CreateLog
-        ExecuteSpotTrade -.-> CreateLog
-        ExecutePerpsOrder -.-> CreateLog
-        ExecuteInvPerpsOrder -.-> CreateLog
-        PlaceOrder -.-> CreateLog
-        FetchMaxSize -.-> CreateLog
-        GetInstrumentInfo -.-> CreateLog
-        GenerateOkxRequest -.-> CreateLog
-        SendNotifications -.-> CreateLog
+    subgraph SecurityLayer["SECURITY LAYER"]
+        direction TB
+        IPMiddleware -->|"❌ Unauthorized IP"| ReturnForbidden["⛔ 403 Forbidden"]
+        IPMiddleware -->|"✅ Authorized IP"| TokenAuth
     end
     
-    %% Utility Functions
-    subgraph UtilityFunctions[Utility Functions]
-        ParseFloat[parseFloat]
-        GenerateUUID[generateUUID]
-        Sleep[sleep]
-        IsValidJSON[isValidJSON]
-        FormatDate[formatDate]
-        TruncateString[truncateString]
-        
-        CalculateOrderSize --> ParseFloat
-        GenerateClOrdId --> GenerateUUID
-        HandleRetry --> Sleep
-        ParsePayload --> IsValidJSON
-        FormatLogMessage --> FormatDate
-        FormatLogMessage --> TruncateString
+    TokenAuth --> ProcessWH
+    
+    subgraph ProcessingLayer["PROCESSING LAYER"]
+        direction TB
+        ProcessWH --> ParsePayload["📝 Parse Payload"]
+        ParsePayload --> ValidatePayload["✓ Validate Payload"]
+        ValidatePayload --> FetchAPIKeys["🔐 Fetch API Keys"]
+        FetchAPIKeys --> ExecuteMultiAccountTrades["📊 Execute Multi-Account Trades"]
     end
     
-    %% Error Handling
-    subgraph ErrorHandling[Error Handling]
-        HandleAPIError[handleAPIError]
-        ValidateResponse[validateResponse]
-        FormatErrorResponse[formatErrorResponse]
+    subgraph TradeExecution["TRADE EXECUTION"]
+        direction TB
+        ExecuteMultiAccountTrades --> PrepareOrders["📋 Prepare Orders"]
+        PrepareOrders --> ExecuteTrade["💹 Execute Trade"]
         
-        PlaceOrder --> HandleAPIError
-        HandleAPIError --> ValidateResponse
-        HandleAPIError --> FormatErrorResponse
-        HandleAPIError --> CreateLog
+        %% Trade Type Router with clearer paths
+        ExecuteTrade -->|"spot"| ExecuteSpotTrade["Spot Trade"]
+        ExecuteTrade -->|"perps"| ExecutePerpsOrder["Perps Order"]
+        ExecuteTrade -->|"invperps"| ExecuteInvPerpsOrder["Inv Perps Order"]
     end
     
-    %% Response Handling
-    ExecuteMultiAccountTrades --> AggregateResults[aggregateResults]
-    AggregateResults --> FormatResponse[formatResponse]
-    FormatResponse --> WebhookResponse[Webhook Response]
+    %% Simplified execution paths for clarity
+    subgraph OrderFunctions["ORDER FUNCTIONS"]
+        direction TB
+        TradePrepFunctions["Trading Preparation Functions"]
+        OrderExecFunctions["Order Execution Functions"]
+    end
     
-    %% Database Interaction
-    FetchAPIKeys --> QueryDatabase[queryDatabase]
-    QueryDatabase --> DecryptCredentials[decryptCredentials]
+    ExecuteSpotTrade & ExecutePerpsOrder & ExecuteInvPerpsOrder --> TradePrepFunctions
+    TradePrepFunctions --> OrderExecFunctions
     
-    %% Styling
-    classDef security fill:#f9a,stroke:#333,stroke-width:2px
-    classDef execution fill:#adf,stroke:#333,stroke-width:2px
-    classDef api fill:#fda,stroke:#333,stroke-width:2px
-    classDef logging fill:#afd,stroke:#333,stroke-width:2px
-    classDef utility fill:#ddd,stroke:#333,stroke-width:1px
+    %% Add clearer connections to important components
+    OrderExecFunctions --> PlaceOrder["📤 Place Order"]
+    PlaceOrder --> OKXApi["OKX API"]
     
-    class IsAllowedIP,ValidateAuthToken,ValidatePayload security
+    %% Notification system with better organization
+    ExecuteMultiAccountTrades --> SendNotifications["📨 Send Notifications"]
+    SendNotifications --> TelegramAlert["Telegram Alert"]
+    
+    %% Response flow
+    ExecuteMultiAccountTrades --> AggregateResults["Aggregate Results"]
+    AggregateResults --> FormatResponse["Format Response"]
+    FormatResponse --> WebhookResponse["📲 Webhook Response"]
+    
+    %% Clear subgraphs for system components
+    subgraph LoggingSystem["LOGGING SYSTEM"]
+        direction TB
+        CreateLog["Create Log"]
+        FormatLog["Format Log"]
+    end
+    
+    subgraph ErrorHandling["ERROR HANDLING"]
+        direction TB
+        HandleError["Handle Errors"]
+        FormatErrorResp["Format Error Response"]
+    end
+    
+    %% Connect important systems
+    SecurityLayer -.-> LoggingSystem
+    ProcessingLayer -.-> LoggingSystem
+    TradeExecution -.-> LoggingSystem
+    PlaceOrder -.-> ErrorHandling
+    
+    %% Enhanced styling with higher contrast
+    classDef security fill:#ff9980,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef execution fill:#80b3ff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef api fill:#ffcc80,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef logging fill:#98ff98,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef utility fill:#e6e6e6,stroke:#333,stroke-width:1px,color:#000
+    classDef mainFlow fill:#d9b3ff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef subgraphStyle fill:#f9f9f9,stroke:#666,stroke-width:1px,color:#333,font-weight:bold
+    
+    %% Apply styles to nodes
+    class WebhookRequest,Router,WebhookResponse mainFlow
+    class IPMiddleware,TokenAuth,ReturnForbidden security
     class ExecuteMultiAccountTrades,ExecuteTrade,ExecuteSpotTrade,ExecutePerpsOrder,ExecuteInvPerpsOrder execution
-    class GenerateOkxRequest,FetchMaxSize,GetInstrumentInfo,PlaceOrder api
-    class LoggingSystem logging
-    class UtilityFunctions utility
+    class PlaceOrder,OKXApi api
+    class LoggingSystem,CreateLog,FormatLog logging
+    class SecurityLayer,ProcessingLayer,TradeExecution,OrderFunctions,ErrorHandling subgraphStyle
 ```
 
 ## Function Categories
 
 ### Security Functions
-- **isAllowedIp**: Validates client IP against whitelist of TradingView IPs
-- **validateAuthToken**: Verifies the authentication token in the request payload
-- **validatePayload**: Ensures the webhook payload contains all required fields
+- **🛡️ IP Validation Middleware**: Universal middleware that validates all incoming requests against the TradingView IP whitelist
+- **🔑 Token Authentication**: Verifies the authentication token in the request payload
+- **✓ Payload Validation**: Ensures the webhook payload contains all required fields and values
 
 ### Request Processing
-- **processWebhook**: Main entry point for webhook processing
-- **parsePayload**: Parses and validates the JSON payload
-- **fetchApiKeys**: Retrieves API keys from the database
+- **⚙️ Process Webhook**: Main entry point for webhook processing
+- **📝 Parse Payload**: Parses and validates the JSON payload
+- **🔐 Fetch API Keys**: Retrieves API keys from the database
 
 ### Trade Execution
-- **executeMultiAccountTrades**: Orchestrates trading across multiple accounts
-- **executeTrade**: Routes trades to appropriate execution function based on type
-- **executeSpotTrade**: Handles spot market trades
-- **executePerpsOrder**: Handles perpetual futures trades
-- **executeInvPerpsOrder**: Handles inverse perpetual futures trades
+- **📊 Execute Multi-Account Trades**: Orchestrates trading across multiple accounts
+- **💹 Execute Trade**: Routes trades to appropriate execution function based on type
+- **Spot/Perps/Inv Perps Trade**: Specialized handlers for different trade types
 
 ### Order Processing
-- **calculateOrderSize**: Determines order size based on available balance and requested percentage
-- **roundToLotSize**: Rounds order size to comply with exchange lot size requirements
-- **generateClOrdId**: Creates a unique client order ID
-- **placeOrder**: Sends the order to the OKX API
+- **Calculate Order Size**: Determines order size based on available balance and requested percentage
+- **Round to Lot Size**: Rounds order size to comply with exchange lot size requirements
+- **Generate Client Order ID**: Creates a unique client order ID
+- **📤 Place Order**: Sends the order to the OKX API
 
 ### API Interaction
-- **generateOkxRequest**: Prepares authenticated requests to OKX API
-- **generateSignature**: Creates cryptographic signature for API requests
-- **fetchMaxSize**: Retrieves maximum available size for trading
-- **getInstrumentInfo**: Gets instrument details like lot size and tick size
+- **Generate OKX Request**: Prepares authenticated requests to OKX API
+- **Generate Signature**: Creates cryptographic signature for API requests
+- **Fetch Max Size**: Retrieves maximum available size for trading
+- **Get Instrument Info**: Gets instrument details like lot size and tick size
 
 ### Notification System
-- **sendNotifications**: Sends trade notifications
-- **formatTradeMessage**: Formats trade details for notifications
-- **sendTelegramAlert**: Sends alerts to Telegram
-- **escapeHtml**: Sanitizes HTML content for Telegram messages
+- **📨 Send Notifications**: Sends trade notifications
+- **Format Trade Message**: Formats trade details for notifications
+- **Telegram Alert**: Sends alerts to Telegram
+- **Escape HTML**: Sanitizes HTML content for Telegram messages
 
 ### Logging System
-- **createLog**: Central logging function
-- **formatLogMessage**: Formats log messages with timestamp and context
+- **Create Log**: Central logging function
+- **Format Log Message**: Formats log messages with timestamp and context
 
 ### Utility Functions
-- **parseFloat**: Safely parses float values
-- **generateUUID**: Generates unique identifiers
-- **sleep**: Implements delay for retry logic
-- **isValidJSON**: Validates JSON strings
-- **formatDate**: Formats dates for logging
-- **truncateString**: Truncates long strings for logging
+- **Parse Float**: Safely parses float values
+- **Generate UUID**: Generates unique identifiers
+- **Sleep**: Implements delay for retry logic
+- **Validate JSON**: Validates JSON strings
+- **Format Date**: Formats dates for logging
+- **Truncate String**: Truncates long strings for logging
 
 ## Data Flow
 
 1. **Request Validation**:
-   - Webhook request → IP validation → Token validation → Payload validation
+   - 🔔 Webhook request → 📡 Router → 🛡️ IP Validation Middleware → 🔑 Token Authentication → ✓ Payload Validation
 
 2. **Trade Processing**:
-   - Process webhook → Fetch API keys → Execute multi-account trades
+   - ⚙️ Process webhook → 🔐 Fetch API keys → 📊 Execute multi-account trades
 
 3. **Order Execution**:
-   - Prepare orders → Execute trade by type → Place orders → Aggregate results
+   - 📋 Prepare orders → 💹 Execute trade by type → 📤 Place orders → Aggregate results
 
 4. **Notification & Response**:
-   - Aggregate results → Send notifications → Format response → Return webhook response
+   - Aggregate results → 📨 Send notifications → Format response → 📲 Return webhook response
 
 ## Security Layers
 
 The system implements multiple security layers:
 
-1. **IP-Based Validation**: Outer security layer that validates requests against whitelist
-2. **Token-Based Authentication**: Inner security layer that verifies auth token
-3. **Payload Validation**: Ensures all required fields are present and valid
-4. **Error Handling**: Comprehensive error handling and logging
+1. **🛡️ Universal IP Validation Middleware**: Outermost security layer that validates all requests against whitelist
+   - Implemented with `router.all('*', ...)` to intercept all incoming requests
+   - Applies to all routes and HTTP methods
+   - Blocks unauthorized IPs with a 403 Forbidden response
+   - Logs both successful and failed validation attempts
+
+2. **🔑 Token-Based Authentication**: Inner security layer that verifies auth token
+   - Uses constant-time comparison to prevent timing attacks
+   - Works in conjunction with IP validation for defense-in-depth
+
+3. **✓ Payload Validation**: Ensures all required fields are present and valid
+   - Validates data types and formats
+   - Prevents processing of malformed requests
+
+4. **⚠️ Error Handling**: Comprehensive error handling and logging
+   - Standardized error responses
+   - Detailed logging of security events
+
+## Middleware Implementation
+
+The middleware-based security implementation offers several advantages:
+
+1. **🔒 Universal Protection**: All routes are protected, regardless of HTTP method or path
+2. **🔄 Consistent Security Controls**: Single implementation ensures uniform security validation
+3. **🚫 Fail-Closed Architecture**: Blocks unauthorized requests before they reach any business logic
+4. **🔧 Maintainability**: Security changes can be made in one place rather than in each route
+5. **🛑 Reduced Risk**: Eliminates the possibility of adding routes that bypass security checks
+
+The middleware is implemented as follows:
+
+```javascript
+router.all('*', async (request, env) => {
+  const clientIp = request.headers.get('cf-connecting-ip');
+  const ipAllowed = isAllowedIp(clientIp);
+  
+  // Log IP validation attempt
+  console.log(`IP validation: ${clientIp} - ${ipAllowed ? 'allowed' : 'blocked'}`);
+  
+  if (!ipAllowed) {
+    return new Response('Forbidden', { status: 403 });
+  }
+  
+  // Continue processing the request
+  return null;
+});
+```
 
 ## Logging & Monitoring
 
 Logging is integrated throughout the system:
-- Security events
-- Trade execution
-- API interactions
-- Errors and exceptions
+- 🛡️ Security events (IP validation, authentication attempts)
+- 📊 Trade execution
+- 🌐 API interactions
+- ⚠️ Errors and exceptions
+
+Enhanced logging for security events includes:
+- IP validation results (success/failure)
+- Client IP address
+- User-Agent information for security incidents
+- Request IDs for correlation
 
 ## Error Handling
 
 The system includes robust error handling:
-- Retry logic for transient errors
-- Comprehensive error logging
-- Standardized error responses
+- ↩️ Retry logic for transient errors
+- 📝 Comprehensive error logging
+- 🔄 Standardized error responses
+- 🔒 Security-focused error handling to prevent information leakage

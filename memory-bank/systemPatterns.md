@@ -7,7 +7,7 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 
 ### Core Components
 1. **API Router**: Handles incoming HTTP requests and routes them to appropriate handlers
-2. **Security Layer**: Multi-layered security with IP validation and token-based authentication
+2. **Security Layer**: Multi-layered security with middleware-based IP validation and token-based authentication
 3. **Validation Module**: Ensures payload correctness and prevents malformed requests
 4. **Trade Execution Engine**: Processes trade requests and communicates with OKX API
 5. **Database Interface**: Retrieves API keys and credentials from D1 database
@@ -21,6 +21,10 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 - **Decision**: Use Cloudflare Workers for hosting the API
 - **Rationale**: Provides low latency, global distribution, and simplified scaling without server management
 
+### Middleware-Based Security
+- **Decision**: Implement security validation as middleware that runs before any route handlers
+- **Rationale**: Ensures all requests are validated consistently, regardless of path or method
+
 ### Multi-Layered Security
 - **Decision**: Implement defense-in-depth with IP validation and token-based authentication
 - **Rationale**: Provides multiple security barriers to protect against unauthorized access
@@ -30,7 +34,7 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 - **Rationale**: Balances security requirements with the simplicity needed for integration with various systems
 
 ### IP-Based Validation
-- **Decision**: Restrict access to known TradingView IP addresses
+- **Decision**: Restrict access to known TradingView IP addresses using universal middleware
 - **Rationale**: Prevents unauthorized access attempts from unknown sources
 
 ### Multi-Account Support
@@ -58,14 +62,18 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 ### Defense-in-Depth Pattern
 - Implements multiple layers of security that operate independently
 
+### Middleware Pattern
+- Implements cross-cutting concerns like security as middleware that runs before route handlers
+
 ## Component Relationships
 
 ```
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │  Webhook Client │──────▶  API Router     │──────▶ IP Validation   │
-└─────────────────┘      └─────────────────┘      └─────────────────┘
-                                 │                          │
-                                 ▼                          ▼
+└─────────────────┘      └─────────────────┘      │    Middleware   │
+                                                  └─────────────────┘
+                                                           │
+                                                           ▼
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │  OKX API        │◀─────▶ Trade Execution │◀─────▶ Authentication  │
 └─────────────────┘      └─────────────────┘      └─────────────────┘
@@ -84,10 +92,13 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 ## Security Architecture
 
 ### Multi-Layered Security Approach
-1. **IP Validation (Outer Layer)**
+1. **IP Validation Middleware (Outer Layer)**
+   - Implemented as the first router middleware using `router.all('*', ...)`
    - Validates client IP against TradingView IP whitelist
+   - Runs before any route handlers for all HTTP methods and paths
    - Rejects unauthorized IPs with 403 Forbidden response
    - Logs security events for monitoring
+   - Provides a uniform security boundary for the entire API
 
 2. **Token Authentication (Inner Layer)**
    - Validates webhook authentication token
@@ -156,10 +167,10 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 A detailed system flow diagram has been created to document all components, functions, and their relationships in the webhook API system. This diagram provides a visual representation of the entire request processing pipeline, from webhook receipt to trade execution, and includes all security layers, logging, API interactions, and error handling.
 
 ### Main Request Flow
-- Webhook Request → Router/Handler → Security Validation → Process Webhook → Trade Execution
+- Webhook Request → IP Validation Middleware → Router/Handler → Token Validation → Process Webhook → Trade Execution
 
 ### Security Validation Layers
-- IP Validation → Token Validation → Payload Validation
+- IP Validation Middleware → Token Validation → Payload Validation
 
 ### Trade Execution Flow
 - Execute Multi-Account Trades → Prepare Orders by Type → Execute Trade by Type → Place Orders → Aggregate Results

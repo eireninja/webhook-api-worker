@@ -38,10 +38,12 @@ Key motivations for the project include:
 - **Leverage Management**: Set and adjust leverage for futures trading
 
 ### Security Features
-- **IP Validation**: Restrict access to verified TradingView IP addresses
-- **Token Authentication**: Require valid authentication token for all requests
-- **Input Validation**: Validate all incoming requests for required parameters
-- **Rate Limiting**: Implement OKX-compliant rate limits to prevent API abuse
+- **Universal IP Validation**: Middleware-based validation ensuring all requests to the API, regardless of path or method, are validated against the TradingView IP whitelist
+- **Defense-in-Depth Architecture**: Multi-layered security with IP validation as the first line of defense followed by token authentication
+- **Comprehensive Logging**: Detailed security event logging with information about all validation attempts and unauthorized access
+- **Token Authentication**: Requirement for valid authentication token for all webhook requests
+- **Input Validation**: Validation of all incoming requests for required parameters and valid values
+- **Rate Limiting**: Implementation of OKX-compliant rate limits to prevent API abuse
 
 ### System Features
 - **Logging**: Comprehensive logging for all operations and security events
@@ -66,8 +68,9 @@ Key motivations for the project include:
 ### Security
 
 - API credentials should be securely stored and never exposed
-- All requests should be properly authenticated
+- All requests should be properly authenticated and validated against IP whitelist
 - Input validation should protect against malicious payloads
+- Security architecture should provide multiple layers of protection
 
 ### Flexibility
 
@@ -81,30 +84,31 @@ Key motivations for the project include:
 
 1. User configures their trading signal source to send webhook requests to the API endpoint
 2. Each webhook contains trading parameters (symbol, side, size, type, etc.)
-3. The API authenticates the request, validates the payload, and executes the trade on OKX
+3. The API validates the client IP, authenticates the request, validates the payload, and executes the trade on OKX
 4. The system sends a notification via Telegram with the trade details and status
 5. The API returns a response with the execution status and any relevant details
 
 ### System Perspective
 
-1. Webhook request is received and authenticated
-2. Payload is validated for required parameters and format
-3. API keys are retrieved from the database
-4. Trade is prepared with appropriate parameters based on trade type
-5. Order is executed on OKX via their API
-6. Results are logged and notifications are sent
-7. Response is returned to the caller
+1. Webhook request is received and validated against the TradingView IP whitelist by the middleware
+2. If IP validation passes, the request is authenticated via token
+3. Payload is validated for required parameters and format
+4. API keys are retrieved from the database
+5. Trade is prepared with appropriate parameters based on trade type
+6. Order is executed on OKX via their API
+7. Results are logged and notifications are sent
+8. Response is returned to the caller
 
 ## Integration Points
 
 ### Input Integration
 
-- **TradingView Alerts**: Primary source of trading signals via webhook
-- **Custom Trading Bots**: Can send webhook requests to execute trades
+- **TradingView Alerts**: Primary source of trading signals
+- **Custom Scripts**: For specialized trading strategies
 - **Manual API Calls**: For testing or manual trade execution
 
 ### Output Integration
 
 - **OKX Exchange API**: For executing trades and retrieving market data
-- **Telegram**: For sending notifications about trade execution and errors
-- **Logging**: For diagnostic and audit purposes
+- **Telegram API**: For notifications about trades and system status
+- **Logging System**: For tracking system activity and performance

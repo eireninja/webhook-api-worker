@@ -8,6 +8,7 @@
 - **D1 Database**: Cloudflare's SQL database for storing API keys and configuration
 - **Fetch API**: For making requests to the OKX trading API
 - **Crypto API**: For cryptographic operations required by OKX authentication
+- **itty-router**: Lightweight router for handling HTTP requests with middleware support
 
 ### Development Tools
 - **Wrangler**: CLI tool for building and deploying Cloudflare Workers
@@ -58,7 +59,7 @@
 - None listed in package.json (self-contained)
 
 ### Internal Dependencies
-- itty-router: Lightweight router for handling HTTP requests
+- itty-router: Lightweight router for handling HTTP requests and middleware
 - Custom modules for logging, authentication, and trade execution
 
 ## Required Environment Variables
@@ -67,11 +68,13 @@
 - `BROKER_TAG_OKX`: For order tracking
 
 ## Security Considerations
-- IP-based validation for restricting access to TradingView IP addresses
+- Universal IP validation middleware as the first line of defense for all routes and HTTP methods
+- Whitelist of authorized TradingView IP addresses with 403 Forbidden responses for unauthorized IPs
 - API keys stored securely in D1 database
 - Authentication token required for webhook access
-- Multi-layered security approach (IP validation + token authentication)
-- Comprehensive security event logging
+- Multi-layered security approach (IP validation middleware + token authentication)
+- Comprehensive security event logging with detailed information about unauthorized access attempts
 - Input validation for all incoming requests
 - Error handling designed to prevent information leakage
 - Rate limiting to prevent abuse
+- Middleware-based security implementation ensures consistent validation across all endpoints
