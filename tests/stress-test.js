@@ -12,8 +12,8 @@ const fs = require('fs');
 // Configuration (adjust these values as needed)
 const CONFIG = {
   // Connection settings
-  workerUrl: 'https://webhook.quantmarketintelligence.com', // Added https:// protocol
-  authToken: 'z8V%kewzQ%m%XKdMJGdWtbX8!V8ZKqHz', // URL encoded special characters
+  workerUrl: '', // Added https:// protocol
+  authToken: '', // URL encoded special characters
   
   // Load testing parameters
   concurrentUsers: 20, // Increased to get meaningful data
