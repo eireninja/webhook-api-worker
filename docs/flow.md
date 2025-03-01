@@ -5,276 +5,186 @@ This document provides a comprehensive overview of the webhook API system archit
 ## System Flow Diagram
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': { 'primaryColor': '#f5f5f5', 'primaryTextColor': '#333', 'primaryBorderColor': '#666', 'lineColor': '#666', 'fontSize': '14px', 'fontFamily': 'arial', 'tertiaryColor': 'transparent'}}}%%
+%%{init: {'theme': 'default', 'themeVariables': { 'primaryColor': '#f9f9f9', 'primaryTextColor': '#000', 'primaryBorderColor': '#333', 'lineColor': '#666', 'fontSize': '16px'}}}%%
 flowchart TD
-    %% Main Request Flow
-    WebhookRequest["Webhook Request"] --> Router["Router (fetch Event Handler)"]
-    Router --> RouterMiddleware["Router Middleware"]
-    RouterMiddleware --> IPValidationMiddleware["ipValidationMiddleware()"]
+    %% Define main components with clear labels
+    WebhookRequest["🔔 Webhook Request"]
+    Router["📡 Router"]
+    IPMiddleware["🛡️ IP Validation Middleware"]
+    TokenAuth["🔑 Token Authentication"]
+    ProcessWH["⚙️ Process Webhook"]
+    
+    %% Main Request Flow - clearer, sequential
+    WebhookRequest --> Router
+    Router --> IPMiddleware
     
     subgraph SecurityLayer["SECURITY LAYER"]
-        style SecurityLayer fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        IPValidationMiddleware -->|"Unauthorized IP"| ReturnForbidden["Return 403 Forbidden"]
-        IPValidationMiddleware -->|"Authorized IP"| ValidateAuthToken["validateAuthToken()"]
+        direction TB
+        IPMiddleware -->|"❌ Unauthorized IP"| ReturnForbidden["⛔ 403 Forbidden"]
+        IPMiddleware -->|"✅ Authorized IP"| TokenAuth
     end
     
-    ValidateAuthToken --> ProcessWebhook["processWebhook()"]
+    TokenAuth --> ProcessWH
     
     subgraph ProcessingLayer["PROCESSING LAYER"]
-        style ProcessingLayer fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        ProcessWebhook --> ParsePayload["parsePayload()"]
-        ParsePayload --> ValidatePayload["validatePayload()"]
-        ValidatePayload --> FetchAPIKeys["fetchApiKeys()"]
-        FetchAPIKeys --> ExecuteMultiAccountTrades["executeMultiAccountTrades()"]
+        direction TB
+        ProcessWH --> ParsePayload["📝 Parse Payload"]
+        ParsePayload --> ValidatePayload["✓ Validate Payload"]
+        ValidatePayload --> FetchAPIKeys["🔐 Fetch API Keys"]
+        FetchAPIKeys --> ExecuteMultiAccountTrades["📊 Execute Multi-Account Trades"]
     end
     
     subgraph TradeExecution["TRADE EXECUTION"]
-        style TradeExecution fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        ExecuteMultiAccountTrades --> PrepareOrders["prepareOrders()"]
-        PrepareOrders --> ExecuteTrade["executeTrade()"]
+        direction TB
+        ExecuteMultiAccountTrades --> PrepareOrders["📋 Prepare Orders"]
+        PrepareOrders --> ExecuteTrade["💹 Execute Trade"]
         
-        %% Trade Type Router
-        ExecuteTrade -->|"type=spot"| ExecuteSpotTrade["executeSpotTrade()"]
-        ExecuteTrade -->|"type=perps"| ExecutePerpsOrder["executePerpsOrder()"]
-        ExecuteTrade -->|"type=invperps"| ExecuteInvPerpsOrder["executeInvPerpsOrder()"]
+        %% Trade Type Router with clearer paths
+        ExecuteTrade -->|"spot"| ExecuteSpotTrade["Spot Trade"]
+        ExecuteTrade -->|"perps"| ExecutePerpsOrder["Perps Order"]
+        ExecuteTrade -->|"invperps"| ExecuteInvPerpsOrder["Inv Perps Order"]
     end
     
-    %% Notification and Response Flow
-    ExecuteMultiAccountTrades --> SendNotifications["sendNotifications()"]
-    ExecuteMultiAccountTrades --> AggregateResults["aggregateResults()"]
-    AggregateResults --> FormatResponse["formatResponse()"]
-    FormatResponse --> WebhookResponse["Webhook Response"]
-    
-    %% Trade Functions Flow
-    subgraph TradeOperations["TRADE OPERATIONS"]
-        style TradeOperations fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        
-        subgraph SpotFunctions["SPOT FUNCTIONS"]
-            style SpotFunctions fill:transparent,stroke:#666,stroke-width:1px,color:#333
-            FormatTradingPairSpot["formatTradingPair()"]
-            GetInstrumentInfoSpot["getInstrumentInfo()"]
-            FetchMaxSizeSpot["fetchMaxSize()"]
-            CalculateOrderSizeSpot["calculateOrderSize()"]
-            RoundToLotSizeSpot["roundToLotSize()"]
-            GenerateClOrdIdSpot["generateClOrdId()"]
-            PlaceOrderSpot["placeOrder()"]
-        end
-        
-        subgraph PerpsFunctions["PERPS FUNCTIONS"]
-            style PerpsFunctions fill:transparent,stroke:#666,stroke-width:1px,color:#333
-            FormatTradingPairPerps["formatTradingPair()"]
-            GetInstrumentInfoPerps["getInstrumentInfo()"]
-            FetchMaxSizePerps["fetchMaxSize()"]
-            CalculateOrderSizePerps["calculateOrderSize()"]
-            GenerateClOrdIdPerps["generateClOrdId()"]
-            PlaceOrderPerps["placeOrder()"]
-        end
-        
-        subgraph InvPerpsFunctions["INV PERPS FUNCTIONS"]
-            style InvPerpsFunctions fill:transparent,stroke:#666,stroke-width:1px,color:#333
-            FormatTradingPairInv["formatTradingPair()"]
-            GetInstrumentInfoInv["getInstrumentInfo()"]
-            FetchMaxSizeInv["fetchMaxSize()"]
-            CalculateOrderSizeInv["calculateOrderSize()"]
-            GenerateClOrdIdInv["generateClOrdId()"]
-            PlaceOrderInv["placeOrder()"]
-        end
+    %% Simplified execution paths for clarity
+    subgraph OrderFunctions["ORDER FUNCTIONS"]
+        direction TB
+        TradePrepFunctions["Trading Preparation Functions"]
+        OrderExecFunctions["Order Execution Functions"]
     end
     
-    ExecuteSpotTrade --> SpotFunctions
-    ExecutePerpsOrder --> PerpsFunctions
-    ExecuteInvPerpsOrder --> InvPerpsFunctions
+    ExecuteSpotTrade & ExecutePerpsOrder & ExecuteInvPerpsOrder --> TradePrepFunctions
+    TradePrepFunctions --> OrderExecFunctions
     
-    %% API Operations
-    subgraph APIOperations["API OPERATIONS"]
-        style APIOperations fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        GenerateOkxRequest["generateOkxRequest()"]
-        GenerateSignature["generateSignature()"]
-        GenerateTimestamp["generateTimestamp()"]
-        PlaceOrder["placeOrder()"]
-        HandleRetry["handleRetry()"]
-    end
+    %% Add clearer connections to important components
+    OrderExecFunctions --> PlaceOrder["📤 Place Order"]
+    PlaceOrder --> OKXApi["OKX API"]
     
-    PlaceOrderSpot & PlaceOrderPerps & PlaceOrderInv --> PlaceOrder
-    PlaceOrder --> GenerateOkxRequest
-    GenerateOkxRequest --> GenerateSignature
-    GenerateOkxRequest --> GenerateTimestamp
-    PlaceOrder --> HandleRetry
-    PlaceOrder --> OKXAPI["OKX API"]
+    %% Notification system with better organization
+    ExecuteMultiAccountTrades --> SendNotifications["📨 Send Notifications"]
+    SendNotifications --> TelegramAlert["Telegram Alert"]
     
-    %% Notification System
-    subgraph NotificationSystem["NOTIFICATION SYSTEM"]
-        style NotificationSystem fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        FormatTradeMessage["formatTradeMessage()"]
-        SendTelegramAlert["sendTelegramAlert()"]
-        EscapeHtml["escapeHtml()"]
-    end
+    %% Response flow
+    ExecuteMultiAccountTrades --> AggregateResults["Aggregate Results"]
+    AggregateResults --> FormatResponse["Format Response"]
+    FormatResponse --> WebhookResponse["📲 Webhook Response"]
     
-    SendNotifications --> FormatTradeMessage
-    SendNotifications --> SendTelegramAlert
-    SendTelegramAlert --> EscapeHtml
-    
-    %% Logging System
+    %% Clear subgraphs for system components
     subgraph LoggingSystem["LOGGING SYSTEM"]
-        style LoggingSystem fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        CreateLog["createLog()"]
-        FormatLogMessage["formatLogMessage()"]
+        direction TB
+        CreateLog["Create Log"]
+        FormatLog["Format Log"]
     end
     
-    %% Connect to logging system
-    IPValidationMiddleware -.-> CreateLog
-    ValidateAuthToken -.-> CreateLog
-    ProcessWebhook -.-> CreateLog
-    ExecuteMultiAccountTrades -.-> CreateLog
-    PlaceOrder -.-> CreateLog
-    
-    %% Error Handling
     subgraph ErrorHandling["ERROR HANDLING"]
-        style ErrorHandling fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        HandleAPIError["handleAPIError()"]
-        ValidateResponse["validateResponse()"]
-        FormatErrorResponse["formatErrorResponse()"]
+        direction TB
+        HandleError["Handle Errors"]
+        FormatErrorResp["Format Error Response"]
     end
     
-    PlaceOrder --> HandleAPIError
-    HandleAPIError --> ValidateResponse
-    HandleAPIError --> FormatErrorResponse
-    HandleAPIError -.-> CreateLog
+    %% Connect important systems
+    SecurityLayer -.-> LoggingSystem
+    ProcessingLayer -.-> LoggingSystem
+    TradeExecution -.-> LoggingSystem
+    PlaceOrder -.-> ErrorHandling
     
-    %% Utility Functions
-    subgraph UtilityFunctions["UTILITY FUNCTIONS"]
-        style UtilityFunctions fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        ParseFloat["parseFloat()"]
-        GenerateUUID["generateUUID()"]
-        Sleep["sleep()"]
-        IsValidJSON["isValidJSON()"]
-        FormatDate["formatDate()"]
-        TruncateString["truncateString()"]
-    end
+    %% Enhanced styling with higher contrast
+    classDef security fill:#ff9980,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef execution fill:#80b3ff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef api fill:#ffcc80,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef logging fill:#98ff98,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef utility fill:#e6e6e6,stroke:#333,stroke-width:1px,color:#000
+    classDef mainFlow fill:#d9b3ff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold
+    classDef subgraphStyle fill:#f9f9f9,stroke:#666,stroke-width:1px,color:#333,font-weight:bold
     
-    CalculateOrderSizeSpot & CalculateOrderSizePerps & CalculateOrderSizeInv --> ParseFloat
-    GenerateClOrdIdSpot & GenerateClOrdIdPerps & GenerateClOrdIdInv --> GenerateUUID
-    HandleRetry --> Sleep
-    ParsePayload --> IsValidJSON
-    FormatLogMessage --> FormatDate
-    FormatLogMessage --> TruncateString
-    
-    %% Database Operations
-    subgraph DatabaseOps["DATABASE OPERATIONS"]
-        style DatabaseOps fill:transparent,stroke:#666,stroke-width:1px,color:#333,stroke-dasharray: 5 5
-        QueryDatabase["queryDatabase()"]
-        DecryptCredentials["decryptCredentials()"]
-    end
-    
-    FetchAPIKeys --> QueryDatabase
-    QueryDatabase --> DecryptCredentials
-    
-    %% Styling for professional tech diagram
-    classDef default fill:#f9f9f9,stroke:#666,stroke-width:1px,color:#333
-    classDef security fill:#f8d7da,stroke:#721c24,stroke-width:1px,color:#721c24
-    classDef execution fill:#cce5ff,stroke:#004085,stroke-width:1px,color:#004085
-    classDef api fill:#fff3cd,stroke:#856404,stroke-width:1px,color:#856404
-    classDef database fill:#d1ecf1,stroke:#0c5460,stroke-width:1px,color:#0c5460
-    classDef response fill:#d4edda,stroke:#155724,stroke-width:1px,color:#155724
-    classDef mainFlow fill:#e2e3e5,stroke:#383d41,stroke-width:1px,color:#383d41
-    
-    %% Apply styling
-    class WebhookRequest,Router,RouterMiddleware mainFlow
-    class IPValidationMiddleware,ValidateAuthToken,ReturnForbidden security
+    %% Apply styles to nodes
+    class WebhookRequest,Router,WebhookResponse mainFlow
+    class IPMiddleware,TokenAuth,ReturnForbidden security
     class ExecuteMultiAccountTrades,ExecuteTrade,ExecuteSpotTrade,ExecutePerpsOrder,ExecuteInvPerpsOrder execution
-    class PlaceOrder,GenerateOkxRequest,GenerateSignature,OKXAPI api
-    class QueryDatabase,DecryptCredentials database
-    class WebhookResponse,FormatResponse response
+    class PlaceOrder,OKXApi api
+    class LoggingSystem,CreateLog,FormatLog logging
+    class SecurityLayer,ProcessingLayer,TradeExecution,OrderFunctions,ErrorHandling subgraphStyle
 ```
 
 ## Function Categories
 
 ### Security Functions
-- **ipValidationMiddleware()**: Universal middleware that validates all incoming requests against the TradingView IP whitelist
-- **isAllowedIp()**: Core function that validates client IP against whitelist of TradingView IPs
-- **validateAuthToken()**: Verifies the authentication token in the request payload
-- **validatePayload()**: Ensures the webhook payload contains all required fields
+- **🛡️ IP Validation Middleware**: Universal middleware that validates all incoming requests against the TradingView IP whitelist
+- **🔑 Token Authentication**: Verifies the authentication token in the request payload
+- **✓ Payload Validation**: Ensures the webhook payload contains all required fields and values
 
 ### Request Processing
-- **processWebhook()**: Main entry point for webhook processing
-- **parsePayload()**: Parses and validates the JSON payload
-- **fetchApiKeys()**: Retrieves API keys from the database
+- **⚙️ Process Webhook**: Main entry point for webhook processing
+- **📝 Parse Payload**: Parses and validates the JSON payload
+- **🔐 Fetch API Keys**: Retrieves API keys from the database
 
 ### Trade Execution
-- **executeMultiAccountTrades()**: Orchestrates trading across multiple accounts
-- **executeTrade()**: Routes trades to appropriate execution function based on type
-- **executeSpotTrade()**: Handles spot market trades
-- **executePerpsOrder()**: Handles perpetual futures trades
-- **executeInvPerpsOrder()**: Handles inverse perpetual futures trades
+- **📊 Execute Multi-Account Trades**: Orchestrates trading across multiple accounts
+- **💹 Execute Trade**: Routes trades to appropriate execution function based on type
+- **Spot/Perps/Inv Perps Trade**: Specialized handlers for different trade types
 
 ### Order Processing
-- **calculateOrderSize()**: Determines order size based on available balance and requested percentage
-- **roundToLotSize()**: Rounds order size to comply with exchange lot size requirements
-- **generateClOrdId()**: Creates a unique client order ID
-- **placeOrder()**: Sends the order to the OKX API
+- **Calculate Order Size**: Determines order size based on available balance and requested percentage
+- **Round to Lot Size**: Rounds order size to comply with exchange lot size requirements
+- **Generate Client Order ID**: Creates a unique client order ID
+- **📤 Place Order**: Sends the order to the OKX API
 
 ### API Interaction
-- **generateOkxRequest()**: Prepares authenticated requests to OKX API
-- **generateSignature()**: Creates cryptographic signature for API requests
-- **generateTimestamp()**: Generates timestamp for API request authentication
-- **fetchMaxSize()**: Retrieves maximum available size for trading
-- **getInstrumentInfo()**: Gets instrument details like lot size and tick size
+- **Generate OKX Request**: Prepares authenticated requests to OKX API
+- **Generate Signature**: Creates cryptographic signature for API requests
+- **Fetch Max Size**: Retrieves maximum available size for trading
+- **Get Instrument Info**: Gets instrument details like lot size and tick size
 
 ### Notification System
-- **sendNotifications()**: Sends trade notifications
-- **formatTradeMessage()**: Formats trade details for notifications
-- **sendTelegramAlert()**: Sends alerts to Telegram
-- **escapeHtml()**: Sanitizes HTML content for Telegram messages
+- **📨 Send Notifications**: Sends trade notifications
+- **Format Trade Message**: Formats trade details for notifications
+- **Telegram Alert**: Sends alerts to Telegram
+- **Escape HTML**: Sanitizes HTML content for Telegram messages
 
 ### Logging System
-- **createLog()**: Central logging function
-- **formatLogMessage()**: Formats log messages with timestamp and context
+- **Create Log**: Central logging function
+- **Format Log Message**: Formats log messages with timestamp and context
 
 ### Utility Functions
-- **parseFloat()**: Safely parses float values
-- **generateUUID()**: Generates unique identifiers
-- **sleep()**: Implements delay for retry logic
-- **isValidJSON()**: Validates JSON strings
-- **formatDate()**: Formats dates for logging
-- **truncateString()**: Truncates long strings for logging
-
-### Database Operations
-- **queryDatabase()**: Executes database queries
-- **decryptCredentials()**: Decrypts sensitive API credentials
+- **Parse Float**: Safely parses float values
+- **Generate UUID**: Generates unique identifiers
+- **Sleep**: Implements delay for retry logic
+- **Validate JSON**: Validates JSON strings
+- **Format Date**: Formats dates for logging
+- **Truncate String**: Truncates long strings for logging
 
 ## Data Flow
 
 1. **Request Validation**:
-   - Webhook request → Router → ipValidationMiddleware() → validateAuthToken() → validatePayload()
+   - 🔔 Webhook request → 📡 Router → 🛡️ IP Validation Middleware → 🔑 Token Authentication → ✓ Payload Validation
 
 2. **Trade Processing**:
-   - processWebhook() → fetchApiKeys() → executeMultiAccountTrades()
+   - ⚙️ Process webhook → 🔐 Fetch API keys → 📊 Execute multi-account trades
 
 3. **Order Execution**:
-   - prepareOrders() → executeTrade() by type → placeOrder() → OKX API
+   - 📋 Prepare orders → 💹 Execute trade by type → 📤 Place orders → Aggregate results
 
 4. **Notification & Response**:
-   - aggregateResults() → sendNotifications() → formatResponse() → Return webhook response
+   - Aggregate results → 📨 Send notifications → Format response → 📲 Return webhook response
 
 ## Security Layers
 
 The system implements multiple security layers:
 
-1. **Universal IP Validation Middleware**: Outermost security layer that validates all requests against whitelist
-   - Implemented with `router.all('*', ipValidationMiddleware)` to intercept all incoming requests
+1. **🛡️ Universal IP Validation Middleware**: Outermost security layer that validates all requests against whitelist
+   - Implemented with `router.all('*', ...)` to intercept all incoming requests
    - Applies to all routes and HTTP methods
    - Blocks unauthorized IPs with a 403 Forbidden response
    - Logs both successful and failed validation attempts
 
-2. **Token-Based Authentication**: Inner security layer that verifies auth token
+2. **🔑 Token-Based Authentication**: Inner security layer that verifies auth token
    - Uses constant-time comparison to prevent timing attacks
    - Works in conjunction with IP validation for defense-in-depth
 
-3. **Payload Validation**: Ensures all required fields are present and valid
+3. **✓ Payload Validation**: Ensures all required fields are present and valid
    - Validates data types and formats
    - Prevents processing of malformed requests
 
-4. **Error Handling**: Comprehensive error handling and logging
+4. **⚠️ Error Handling**: Comprehensive error handling and logging
    - Standardized error responses
    - Detailed logging of security events
 
@@ -282,11 +192,11 @@ The system implements multiple security layers:
 
 The middleware-based security implementation offers several advantages:
 
-1. **Universal Protection**: All routes are protected, regardless of HTTP method or path
-2. **Consistent Security Controls**: Single implementation ensures uniform security validation
-3. **Fail-Closed Architecture**: Blocks unauthorized requests before they reach any business logic
-4. **Maintainability**: Security changes can be made in one place rather than in each route
-5. **Reduced Risk**: Eliminates the possibility of adding routes that bypass security checks
+1. **🔒 Universal Protection**: All routes are protected, regardless of HTTP method or path
+2. **🔄 Consistent Security Controls**: Single implementation ensures uniform security validation
+3. **🚫 Fail-Closed Architecture**: Blocks unauthorized requests before they reach any business logic
+4. **🔧 Maintainability**: Security changes can be made in one place rather than in each route
+5. **🛑 Reduced Risk**: Eliminates the possibility of adding routes that bypass security checks
 
 The middleware is implemented as follows:
 
@@ -296,7 +206,7 @@ router.all('*', async (request, env) => {
   const ipAllowed = isAllowedIp(clientIp);
   
   // Log IP validation attempt
-  createLog('security', `IP validation: ${clientIp} - ${ipAllowed ? 'allowed' : 'blocked'}`);
+  console.log(`IP validation: ${clientIp} - ${ipAllowed ? 'allowed' : 'blocked'}`);
   
   if (!ipAllowed) {
     return new Response('Forbidden', { status: 403 });
@@ -310,10 +220,10 @@ router.all('*', async (request, env) => {
 ## Logging & Monitoring
 
 Logging is integrated throughout the system:
-- Security events (IP validation, authentication attempts)
-- Trade execution
-- API interactions
-- Errors and exceptions
+- 🛡️ Security events (IP validation, authentication attempts)
+- 📊 Trade execution
+- 🌐 API interactions
+- ⚠️ Errors and exceptions
 
 Enhanced logging for security events includes:
 - IP validation results (success/failure)
@@ -324,7 +234,7 @@ Enhanced logging for security events includes:
 ## Error Handling
 
 The system includes robust error handling:
-- Retry logic for transient errors (handleRetry)
-- Comprehensive error logging (createLog)
-- Standardized error responses (formatErrorResponse)
-- Security-focused error handling to prevent information leakage
+- ↩️ Retry logic for transient errors
+- 📝 Comprehensive error logging
+- 🔄 Standardized error responses
+- 🔒 Security-focused error handling to prevent information leakage
