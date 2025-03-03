@@ -155,14 +155,33 @@ function validateAuthToken(payload, env) {
 
   const { authToken } = payload;
   if (!authToken) {
+    createLog('AUTH', {
+      operation: 'Authentication',
+      status: 'failed',
+      details: {
+        reason: 'Missing token'
+      }
+    }, 'unknown');
     throw new Error('Missing authentication token');
   }
 
   // Constant-time comparison to prevent timing attacks
   if (authToken !== env.WEBHOOK_AUTH_TOKEN) {
-    createLog('AUTH', 'Authentication failed', '', '');
+    createLog('AUTH', {
+      operation: 'Authentication',
+      status: 'failed',
+      details: {
+        reason: 'Invalid token'
+      }
+    }, 'unknown');
     throw new Error('Invalid authentication token');
   }
+  
+  // Log successful authentication
+  createLog('AUTH', {
+    operation: 'Authentication',
+    status: 'success'
+  }, 'unknown');
 }
 
 //=============================================================================
@@ -236,7 +255,16 @@ function generateClOrdId(strategyId, brokerTag, batchIndex = '', requestId = 'un
   const sanitizedStrategy = (strategyId || 'default')
     .replace(/[^a-zA-Z0-9]/g, '')
     .substring(0, 6); // Shorter strategy ID
-  createLog('TRADE', 'Generating clOrdId', requestId);
+  
+  createLog('TRADE', {
+    operation: 'Generating client order ID',
+    details: {
+      strategy: strategyId,
+      broker: brokerTag,
+      batch: batchIndex || 'N/A'
+    }
+  }, requestId);
+  
   // Ensure total length is under 32 chars
   return `${brokerTag}${sanitizedStrategy}${timestamp}${batchIndex}`.substring(0, 32);
 }
@@ -483,7 +511,6 @@ async function makeOkxApiRequest(method, path, body, credentials, requestId, opt
  */
 async function generateOkxRequest(method, path, body, credentials, requestId = 'unknown') {
   const timestamp = new Date().toISOString().split('.')[0] + 'Z';
-  createLog('AUTH', `Generating request with API key: ${mask(credentials.apiKey)}`, requestId);
   
   // Always include /api/v5 in signature path
   const signaturePath = path.startsWith('/api/v5') ? path : `/api/v5${path}`;
@@ -500,13 +527,15 @@ async function generateOkxRequest(method, path, body, credentials, requestId = '
     'OK-ACCESS-PASSPHRASE': credentials.passphrase
   };
 
-  const authLog = formatAuthLogMessage(method, path, {
-    Method: method,
-    Path: path,
-    Timestamp: timestamp,
-    ...JSON.parse(body || '{}')
-  });
-  createLog('AUTH', authLog, requestId);
+  // Use logGroup to create a structured log for the authentication details
+  logGroup('AUTH', 'API Request Authentication', [
+    `Method: ${method.toUpperCase()}`,
+    `Endpoint: ${path}`,
+    `API Key: ${mask(credentials.apiKey)}`,
+    `Timestamp: ${timestamp}`,
+    `Signature: ${mask(signature)}`,
+    `Payload: ${body ? mask(body) : 'empty'}`
+  ], requestId);
   
   return { headers, timestamp };
 }
@@ -603,32 +632,18 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
     const path = '/api/v5/account/max-avail-size';
     const queryParams = `?instId=${instId}&tdMode=cash`;
     
-    const { headers } = await generateOkxRequest(
-      'GET',
-      path + queryParams,
-      '',
-      credentials,
-      requestId
-    );
-
-    createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`, requestId);
-    const response = await fetch(`https://www.okx.com${path}${queryParams}`, {
-      method: 'GET',
-      headers
-    });
-
-    const data = await response.json();
-    if (data.code !== '0' || !data.data?.[0]) {
-      throw new Error('Failed to get account balance');
+    try {
+      const data = await makeOkxApiRequest('GET', `${path}${queryParams}`, '', credentials, requestId);
+      
+      if (!data.data || !data.data[0]) {
+        throw new Error(`No instrument data found for ${instId}`);
+      }
+      
+      return data.data[0];
+    } catch (error) {
+      createLog('API', `Failed to get instrument info: ${error.message}`, requestId);
+      throw error;
     }
-
-    // Make sure we have valid numbers
-    const result = data.data[0];
-    if (!result.availBuy || !result.availSell) {
-      throw new Error('Invalid max size response: ' + JSON.stringify(result));
-    }
-    
-    return result;
   } catch (error) {
     createLog('API', `Failed to get max size: ${error.message}`, requestId);
     throw new Error(`Failed to get max size: ${error.message}`);
@@ -683,7 +698,13 @@ async function getAccountBalance(credentials, requestId) {
  * @returns {Promise<Object>} Instrument details
  */
 async function getInstrumentInfo(instId, credentials, requestId) {
-  createLog('TRADE', 'Getting instrument info', requestId);
+  createLog('TRADE', {
+    operation: 'Getting instrument info',
+    details: {
+      instrument: instId,
+      type: instId.includes('-SWAP') ? 'SWAP' : 'SPOT'
+    }
+  }, requestId);
   const path = '/api/v5/public/instruments';
   const queryParams = `?instType=${instId.includes('-SWAP') ? 'SWAP' : 'SPOT'}&instId=${instId}`;
   
@@ -696,7 +717,14 @@ async function getInstrumentInfo(instId, credentials, requestId) {
     
     return data.data[0];
   } catch (error) {
-    createLog('API', `Failed to get instrument info: ${error.message}`, requestId);
+    createLog('ERROR', {
+      operation: 'Instrument info retrieval',
+      status: 'Failed',
+      details: {
+        instrument: instId,
+        error: error.message
+      }
+    }, requestId);
     throw error;
   }
 }
@@ -736,7 +764,16 @@ async function getCurrentPosition(instId, credentials, requestId) {
       throw new Error(`No position found for ${instId}`);
     }
 
-    createLog('TRADE', `Current position: ${JSON.stringify(position)}`, requestId);
+    createLog('TRADE', {
+      operation: 'Current position',
+      details: {
+        instrument: instId,
+        size: position.pos,
+        entryPrice: position.avgPx || 'unknown',
+        markPrice: position.markPx || 'unknown',
+        pnl: position.pnl || '0'
+      }
+    }, requestId);
     return position;
   } catch (error) {
     createLog('API', `Failed to get position: ${error.message}`, requestId);
@@ -754,7 +791,14 @@ async function getCurrentPosition(instId, credentials, requestId) {
  * @returns {Promise<Object>} Maximum size information
  */
 async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
-  createLog('TRADE', 'Getting max size', requestId);
+  createLog('TRADE', {
+    operation: 'Getting max size',
+    details: {
+      instrument: instId,
+      mode: tdMode,
+      positionSide: posSide
+    }
+  }, requestId);
   const path = '/api/v5/account/max-size';
   let queryParams = `?instId=${instId}&tdMode=${tdMode}`;
   
@@ -773,7 +817,14 @@ async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
       throw new Error(`Invalid max size response: ${JSON.stringify(data)}`);
     }
     
-    createLog('TRADE', `Max size for ${instId}: Buy=${maxBuy} contracts, Sell=${maxSell} contracts`, requestId);
+    createLog('TRADE', {
+      operation: 'Max size response',
+      details: {
+        instrument: instId,
+        buy: maxBuy,
+        sell: maxSell
+      }
+    }, requestId);
     return { maxBuy, maxSell };
   } catch (error) {
     createLog('API', `Failed to get max size: ${error.message}`, requestId);
@@ -850,7 +901,13 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
     const instId = formatTradingPair(payload.symbol, 'spot');
     
     // Get instrument info for the symbol
-    createLog('TRADE', `Getting instrument info for ${instId}`, requestId);
+    createLog('TRADE', {
+      operation: 'Getting instrument info',
+      details: {
+        instrument: instId,
+        type: 'SPOT'
+      }
+    }, requestId);
     const instInfo = await getInstrumentInfo(instId, credentials, requestId);
     if (!instInfo || !instInfo.lotSz) {
       createLog('TRADE', `Failed to get instrument info for ${instId}`, requestId);
@@ -876,7 +933,15 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
         throw new Error(`Invalid order size calculated: ${orderSize}`);
       }
     } catch (sizeError) {
-      createLog('TRADE', `Order size calculation failed: ${sizeError.message}`, requestId);
+      createLog('ERROR', {
+        operation: 'Order size calculation',
+        status: 'failed',
+        details: {
+          accountKey: mask(credentials.apiKey),
+          error: sizeError.message,
+          instrument: instId
+        }
+      }, requestId);
       return { successful: 0, failed: 1, sz: 0 };
     }
     
@@ -902,27 +967,46 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
     
     // Check both API-level and order-level success
     if (!result.successful || result.failed > 0) {
-      createLog('TRADE', `Order placement failed`, requestId);
+      createLog('ERROR', {
+        operation: 'Spot order placement',
+        status: 'failed',
+        details: {
+          accountKey: mask(credentials.apiKey),
+          instrument: instId,
+          size: orderSize,
+          side: payload.side
+        }
+      }, requestId);
       return { successful: 0, failed: 1, sz: orderSize };
     }
 
     // Return explicit success with size information
-    createLog('TRADE', formatTradeLogMessage(
-      'SPOT',
-      payload.side.toUpperCase(),
-      {
-        symbol: instId,
+    createLog('TRADE', {
+      operation: 'Spot order',
+      status: 'success',
+      details: {
+        accountKey: mask(credentials.apiKey),
+        instrument: instId,
+        action: payload.side.toUpperCase(),
         size: orderSize,
         maxSize: maxQty,
         mode: 'cash',
         tgtCcy: isBuy ? 'base_ccy' : 'quote_ccy',
         qty: payload.qty
       }
-    ), requestId, credentials.apiKey);
+    }, requestId);
     return { successful: 1, failed: 0, sz: orderSize };
   } catch (error) {
     // Log unexpected errors
-    createLog('TRADE', `Unexpected error in spot trade execution: ${error.message}`, requestId, credentials.apiKey, env);
+    createLog('ERROR', {
+      operation: 'Spot order execution',
+      status: 'failed',
+      details: {
+        accountKey: mask(credentials.apiKey),
+        error: error.message,
+        stack: DEBUG ? error.stack : undefined
+      }
+    }, requestId);
     return { successful: 0, failed: 1, sz: 0 };
   }
 }
@@ -989,7 +1073,13 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
     const instId = formatTradingPair(payload.symbol, 'perps');
     
     // Get instrument info for lot size
-    createLog('TRADE', `Getting instrument info for ${instId}`, requestId);
+    createLog('TRADE', {
+      operation: 'Getting instrument info',
+      details: {
+        instrument: instId,
+        type: 'PERPS'
+      }
+    }, requestId);
     const instInfo = await getInstrumentInfo(instId, credentials, requestId);
     
     if (!instInfo || !instInfo.lotSz) {
@@ -1012,17 +1102,29 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
     const maxQty = payload.side.toLowerCase() === 'buy' ? maxBuy : maxSell;
     let orderSize;
     
-    if (payload.qty.includes('%')) {
-      orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
-    } else {
-      orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
-    }
+    try {
+      if (payload.qty.includes('%')) {
+        orderSize = calculateOrderSize(maxQty, payload.qty, instInfo.lotSz);
+      } else {
+        orderSize = roundToLotSize(parseFloat(payload.qty), instInfo.lotSz).toString();
+      }
 
-    // Validate final order size
-    if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
-      throw new Error(`Invalid order size: ${orderSize}`);
+      if (isNaN(parseFloat(orderSize)) || parseFloat(orderSize) <= 0) {
+        throw new Error(`Invalid order size: ${orderSize}`);
+      }
+    } catch (sizeError) {
+      createLog('ERROR', {
+        operation: 'Order size calculation',
+        status: 'failed',
+        details: {
+          accountKey: mask(credentials.apiKey),
+          error: sizeError.message,
+          instrument: instId
+        }
+      }, requestId);
+      return { successful: 0, failed: 1, sz: 0 };
     }
-
+    
     // Prepare order data
     const orderData = {
       instId,
@@ -1044,18 +1146,20 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
-    createLog('TRADE', formatTradeLogMessage(
-      'PERP',
-      'Open Position',
-      {
-        symbol: instId,
+    createLog('TRADE', {
+      operation: 'Perps order',
+      status: 'success',
+      details: {
+        accountKey: mask(credentials.apiKey),
+        instrument: instId,
+        action: 'Open Position',
         size: orderSize,
         maxSize: maxQty,
         mode: payload.marginMode,
         leverage: payload.leverage,
         qty: payload.qty
       }
-    ), requestId, credentials.apiKey);
+    }, requestId);
     return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     createLog('ERROR', `Failed to open USDT Perpetual position: ${error.message}`, requestId, credentials.apiKey, env);
@@ -1084,14 +1188,19 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     throw new Error('Invalid marginMode: must be either cross or isolated');
   }
 
+  // Trade logging messages to collect for group log
+  const tradeLogMessages = [];
+  const instId = payload.symbol;
+
   try {
-    const instId = payload.symbol;
-    
     // Get current position details
-    createLog('TRADE', `Getting current position for ${instId}`, requestId);
+    tradeLogMessages.push(`Retrieving current position for ${instId}`);
     const position = await getCurrentPosition(instId, credentials, requestId);
+    
     if (!position || !position.pos) {
       // No position to close is a success case (idempotency)
+      tradeLogMessages.push(`No open position found for ${instId}`);
+      logGroup('TRADE', `Position Closing - ${instId} (No Position)`, tradeLogMessages, requestId, credentials.apiKey);
       return { successful: 1, failed: 0, sz: 0 };
     }
 
@@ -1100,12 +1209,16 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     const isLong = position.posSide === 'long';
     const side = isLong ? 'sell' : 'buy';
     
-    createLog('TRADE', `Closing ${isLong ? 'long' : 'short'} position of size ${Math.abs(positionSize)} with ${side} order`, requestId);
+    tradeLogMessages.push(`Closing ${isLong ? 'long' : 'short'} position of size ${Math.abs(positionSize)} with ${side} order`);
     
     // Use raw contract size directly from position (absolute value)
     const orderSize = Math.abs(positionSize).toString();
 
-    createLog('TRADE', `Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`, requestId);
+    tradeLogMessages.push(`Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`);
+    tradeLogMessages.push(`Entry price: ${position.avgPx || 'unknown'}, Mark price: ${position.markPx || 'unknown'}, PnL: ${position.pnl || '0'}`);
+
+    // Log the grouped messages for position retrieval and preparation
+    logGroup('TRADE', `Position Closing - ${instId} (Preparation)`, tradeLogMessages, requestId, credentials.apiKey);
 
     // Prepare close order data
     const orderData = {
@@ -1122,10 +1235,12 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
 
     // If dryRun, return the order data without executing
     if (dryRun) {
+      createLog('TRADE', `DRY RUN - order data prepared but not executed for ${instId}`, requestId);
       return { orderData };
     }
 
     // Place single order
+    createLog('TRADE', `Executing order to close ${position.posSide} position for ${instId}`, requestId);
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
@@ -1135,17 +1250,32 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
       {
         symbol: instId,
         size: orderSize,
-        maxSize: maxQty,
         mode: payload.marginMode
       },
       position
     ), requestId, credentials.apiKey);
+    
+    // Log successful order placement
+    logGroup('TRADE', `Position Closing - ${instId} (Success)`, [
+      `Position closed successfully`,
+      `Order size: ${orderSize}`,
+      `Position side: ${position.posSide}`,
+      `Order side: ${side}`,
+      `Result: ${JSON.stringify(result)}`
+    ], requestId, credentials.apiKey);
+    
     return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     // Only log errors that haven't been logged before
     if (!error.logged && !error.message.includes('Order placed')) {
       createLog('ERROR', `Failed to close position: ${error.message}`, requestId, credentials.apiKey, env);
       error.logged = true;
+      
+      // Group log for error case
+      logGroup('ERROR', `Position Closing Error - ${instId}`, [
+        ...tradeLogMessages,
+        `Error: ${error.message}`
+      ], requestId, credentials.apiKey);
     }
     return { successful: 0, failed: 1 };
   }
@@ -1243,7 +1373,15 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
         throw new Error(`Order size ${finalSize} exceeds maximum available size ${maxQty}`);
       }
     } catch (sizeError) {
-      createLog('TRADE', `Order size calculation failed: ${sizeError.message}`, requestId);
+      createLog('ERROR', {
+        operation: 'Order size calculation',
+        status: 'failed',
+        details: {
+          accountKey: mask(credentials.apiKey),
+          error: sizeError.message,
+          instrument: instId
+        }
+      }, requestId);
       return { successful: 0, failed: 1, sz: 0 };
     }
 
@@ -1268,18 +1406,20 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
     const result = await placeOrder(orderData, credentials, requestId, env);
     
     // Return success with size information
-    createLog('TRADE', formatTradeLogMessage(
-      'INV_PERP',
-      'Open Position',
-      {
-        symbol: instId,
+    createLog('TRADE', {
+      operation: 'InvPerps order',
+      status: 'success',
+      details: {
+        accountKey: mask(credentials.apiKey),
+        instrument: instId,
+        action: 'Open Position',
         size: orderSize,
         maxSize: maxQty,
         mode: payload.marginMode,
         leverage: payload.leverage,
         qty: payload.qty
       }
-    ), requestId, credentials.apiKey);
+    }, requestId);
     return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     // Log unexpected errors
@@ -1289,7 +1429,7 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
 }
 
 /**
- * Closes an inverse perpetual position
+ * Closes an inverse perpetual futures position
  * @param {Object} payload - Trade payload
  * @param {Object} credentials - API credentials
  * @param {string} brokerTag - Broker identification tag
@@ -1305,14 +1445,20 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
     return { successful: 0, failed: 1, sz: 0 };
   }
 
+  // Trade logging messages to collect for group log
+  const tradeLogMessages = [];
+  // Format the instId outside the try block to ensure it's in scope for the entire function
+  const instId = formatTradingPair(payload.symbol, 'invperps');
+
   try {
-    const instId = formatTradingPair(payload.symbol, 'invperps');
-    
     // Get current position details
-    createLog('TRADE', `Getting current position for ${instId}`, requestId);
+    tradeLogMessages.push(`Retrieving current position for ${instId}`);
     const position = await getCurrentPosition(instId, credentials, requestId);
+    
     if (!position || !position.pos) {
-      throw new Error('No position found to close');
+      tradeLogMessages.push(`No open position found for ${instId}`);
+      logGroup('TRADE', `Position Closing - ${instId} (No Position)`, tradeLogMessages, requestId, credentials.apiKey);
+      return { successful: 1, failed: 0, sz: 0 }; // Return success for idempotency
     }
 
     // For inverse perpetual contracts:
@@ -1321,7 +1467,12 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
     const side = position.posSide === 'long' ? 'sell' : 'buy';
     const orderSize = Math.abs(parseFloat(position.pos)).toString();
 
-    createLog('TRADE', `Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`, requestId);
+    tradeLogMessages.push(`Closing ${position.posSide === 'long' ? 'long' : 'short'} position of size ${orderSize} with ${side} order`);
+    tradeLogMessages.push(`Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`);
+    tradeLogMessages.push(`Entry price: ${position.avgPx || 'unknown'}, Mark price: ${position.markPx || 'unknown'}, PnL: ${position.pnl || '0'}`);
+
+    // Log the grouped messages for position details
+    logGroup('TRADE', `Position Closing - ${instId}`, tradeLogMessages, requestId, credentials.apiKey);
 
     // Prepare close order data
     const orderData = {
@@ -1338,26 +1489,49 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
 
     // If dryRun, return the order data without executing
     if (dryRun) {
+      logGroup('TRADE', `Position Closing - ${instId} (DRY RUN)`, [
+        ...tradeLogMessages,
+        `DRY RUN - no order executed`
+      ], requestId, credentials.apiKey);
       return { orderData };
     }
 
     // Place single order
+    createLog('TRADE', `Executing ${side} order to close position`, requestId);
     const result = await placeOrder(orderData, credentials, requestId, env);
+    
+    // Log success group
+    logGroup('TRADE', `Position Closing - ${instId} (Success)`, [
+      ...tradeLogMessages,
+      `Order executed successfully: ${JSON.stringify(result)}`
+    ], requestId, credentials.apiKey);
+
+    // Log using consistent format with masked API key
     createLog('TRADE', formatTradeLogMessage(
       'INV_PERP_CLOSE',
       'Close Position',
       {
         symbol: instId,
         size: orderSize,
-        maxSize: maxQty,
         mode: payload.marginMode
       },
       position
     ), requestId, credentials.apiKey);
+    
+    // Use original return format
     return { result: null, successful: result.successful, failed: result.failed };
   } catch (error) {
+    // Log error
     createLog('ERROR', `Failed to close inverse perpetual position: ${error.message}`, requestId, credentials.apiKey);
-    return { result: null, successful: 0, failed: 1 };  // Return failure result instead of throwing
+    
+    // Add grouped error log if we've collected messages
+    logGroup('ERROR', `Position Closing Error - ${instId}`, [
+      ...tradeLogMessages,
+      `Error: ${error.message}`
+    ], requestId, credentials.apiKey);
+    
+    // Return original format for errors instead of throwing
+    return { result: null, successful: 0, failed: 1 };
   }
 }
 
@@ -1495,7 +1669,10 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
   try {
     const preparedOrders = [];
     
-    createLog('TRADE', `Starting multi-account trade execution for ${apiKeys.length} accounts`, requestId);
+    createLog('TRADE', {
+      operation: 'Starting multi-account trade execution',
+      details: { accounts: apiKeys.length }
+    }, requestId);
     
     // First, collect all orders using dryRun
     for (const account of apiKeys) {
@@ -1510,7 +1687,14 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
   if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
     const accountId = credentials.apiKey ? credentials.apiKey.substring(0, 4) : 'unknown';
     const errorMsg = 'Invalid credentials: missing required fields';
-    createLog('ERROR', `${errorMsg} for account ${accountId}`, requestId);
+    createLog('ERROR', {
+      operation: 'Credential validation',
+      status: 'failed',
+      details: {
+        accountKey: mask(credentials.apiKey),
+        reason: errorMsg
+      }
+    }, requestId);
     
     // Add failed order to allOrders for credential issues
     allOrders.push({
@@ -1548,11 +1732,25 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
             result.orderData.dryRun = true;
           }
           allOrders.push({ order: result.orderData, credentials, success: true });
-          createLog('TRADE', `Order prepared successfully for account ${result.orderData.accountId}`, requestId);
+          createLog('TRADE', {
+            operation: 'Order preparation',
+            status: 'success',
+            details: {
+              accountKey: mask(credentials.apiKey),
+              size: result.orderData.sz || '0'
+            }
+          }, requestId);
         } else {
           const accountId = credentials.apiKey.substring(0, 4);
           const errorMsg = 'Order preparation failed: no order data returned';
-          createLog('ERROR', `Failed to prepare order for account ${accountId}: ${errorMsg}`, requestId);
+          createLog('ERROR', {
+            operation: 'Order preparation',
+            status: 'failed',
+            details: {
+              accountKey: mask(credentials.apiKey),
+              reason: errorMsg
+            }
+          }, requestId);
           
           // Add failed order to allOrders
           allOrders.push({
@@ -1569,7 +1767,14 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         }
       } catch (error) {
         const accountId = credentials.apiKey.substring(0, 4);
-        createLog('ERROR', `Failed to prepare order for account ${accountId}: ${error.message}`, requestId);
+        createLog('ERROR', {
+          operation: 'Order preparation',
+          status: 'failed',
+          details: {
+            accountKey: mask(credentials.apiKey),
+            reason: error.message
+          }
+        }, requestId);
         
         // Add failed order to allOrders for proper tracking
         allOrders.push({
@@ -1587,11 +1792,18 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     }
 
     if (allOrders.length === 0) {
-      createLog('TRADE', 'No valid orders to execute', requestId);
+      createLog('TRADE', {
+        operation: 'Order execution',
+        status: 'skipped',
+        details: { reason: 'No valid orders to execute' }
+      }, requestId);
       return { successful: 0, failed: totalFailed, sz: 0 };
     }
 
-    createLog('TRADE', `Executing ${allOrders.length} prepared orders`, requestId);
+    createLog('TRADE', {
+      operation: 'Executing orders',
+      details: { count: allOrders.length }
+    }, requestId);
 
     // Execute each order individually
     for (const orderObj of allOrders) {
@@ -1600,17 +1812,38 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         if (result.successful) {
           totalSuccessful++;
           totalSize += parseFloat(orderObj.order.sz || 0);
-          createLog('TRADE', `Order executed successfully for account ${orderObj.order.accountId}`, requestId);
+          createLog('TRADE', {
+            operation: 'Order execution',
+            status: 'success',
+            details: {
+              accountKey: mask(orderObj.credentials.apiKey),
+              size: orderObj.order.sz || '0'
+            }
+          }, requestId);
           allOrders[allOrders.indexOf(orderObj)].success = true;
         } else {
           totalFailed++;
           const errorMsg = result.error || 'Unknown error';
-          createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Order failed: ${errorMsg}`, requestId);
+          createLog('ERROR', {
+            operation: 'Order execution',
+            status: 'failed',
+            details: {
+              accountKey: mask(orderObj.credentials.apiKey),
+              reason: errorMsg
+            }
+          }, requestId);
           allOrders[allOrders.indexOf(orderObj)].success = false;
           allOrders[allOrders.indexOf(orderObj)].error = errorMsg;
         }
       } catch (error) {
-        createLog('ERROR', `[ReqID=${requestId}][Account=${orderObj.order.accountId}...] Trade failed: ${error.message}`, requestId);
+        createLog('ERROR', {
+          operation: 'Order execution',
+          status: 'failed',
+          details: {
+            accountKey: mask(orderObj.credentials.apiKey),
+            reason: error.message
+          }
+        }, requestId);
         totalFailed++;
         allOrders[allOrders.indexOf(orderObj)].success = false;
         allOrders[allOrders.indexOf(orderObj)].error = error.message;
@@ -1627,11 +1860,11 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       Symbol: payload.symbol
     };
 
-    createLog('TRADE', formatTradeLogMessage(
-      'MULTI_ACCOUNT',
-      'Trade Summary',
-      summary
-    ), requestId);
+    createLog('TRADE', {
+      operation: 'Trade summary',
+      status: 'success',
+      details: summary
+    }, requestId);
 
     const result = {
       successful: totalSuccessful,
@@ -1686,9 +1919,9 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         requestId,
         totalAccounts: apiKeys.length,
         successCount: totalSuccessful,
-        failedAccounts: allOrders.filter(o => !o.success).map(o => ({ 
-          id: o.order.accountId, 
-          error: o.error 
+        failedAccounts: allOrders.filter(o => !o.success).map(order => ({
+          id: order.order.accountId,
+          error: order.error
         })),
         errors: [error.message],
         closePosition: !!payload.closePosition,  // Ensure boolean
@@ -1934,7 +2167,7 @@ function formatTradeLogMessage(type, action, details, position = null) {
 /**
  * Creates a standardized log entry with proper formatting
  * @param {LOG_LEVEL} level - Log level (INFO, TRADE, ERROR, etc.)
- * @param {string} message - Log message
+ * @param {string|Object} message - Log message or structured log object
  * @param {string} requestId - Request identifier
  * @param {string} [apiKey] - Optional API key
  * @param {Object} [env] - Environment variables
@@ -1946,23 +2179,47 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
   // Add transaction path for easier tracing
   let transactionPath = '';
   
-  // Extract transaction path from context if available
-  if (message.includes('Getting instrument info')) {
-    transactionPath = 'FETCH_INSTRUMENT';
-  } else if (message.includes('Getting max size')) {
-    transactionPath = 'FETCH_MAX_SIZE';
-  } else if (message.includes('Generating request')) {
-    transactionPath = 'AUTH_REQUEST';
-  } else if (message.includes('Order') && !message.includes('successful')) {
-    transactionPath = 'ORDER_PROCESS';
-  } else if (message.includes('executed successfully')) {
-    transactionPath = 'ORDER_SUCCESS';
-  } else if (message.includes('failed')) {
-    transactionPath = 'ORDER_FAILURE';
-  } else if (message.includes('validation')) {
-    transactionPath = 'VALIDATION';
-  } else if (message.includes('Received')) {
-    transactionPath = 'REQUEST_RECEIVED';
+  // First check the type of message to avoid calling string methods on objects
+  if (typeof message === 'object' && message !== null && !(message instanceof Error)) {
+    // For object messages, try to extract transaction path from operation field
+    const { operation = '' } = message;
+    
+    if (operation.includes('instrument info')) {
+      transactionPath = 'FETCH_INSTRUMENT';
+    } else if (operation.includes('max size')) {
+      transactionPath = 'FETCH_MAX_SIZE';
+    } else if (operation.includes('request')) {
+      transactionPath = 'AUTH_REQUEST';
+    } else if (operation.includes('Order') && !operation.includes('successful')) {
+      transactionPath = 'ORDER_PROCESS';
+    } else if (operation.includes('executed successfully')) {
+      transactionPath = 'ORDER_SUCCESS';
+    } else if (operation.includes('failed')) {
+      transactionPath = 'ORDER_FAILURE';
+    } else if (operation.includes('validation')) {
+      transactionPath = 'VALIDATION';
+    } else if (operation.includes('Received')) {
+      transactionPath = 'REQUEST_RECEIVED';
+    }
+  } else if (typeof message === 'string') {
+    // Extract transaction path from string message
+    if (message.includes('Getting instrument info')) {
+      transactionPath = 'FETCH_INSTRUMENT';
+    } else if (message.includes('Getting max size')) {
+      transactionPath = 'FETCH_MAX_SIZE';
+    } else if (message.includes('Generating request')) {
+      transactionPath = 'AUTH_REQUEST';
+    } else if (message.includes('Order') && !message.includes('successful')) {
+      transactionPath = 'ORDER_PROCESS';
+    } else if (message.includes('executed successfully')) {
+      transactionPath = 'ORDER_SUCCESS';
+    } else if (message.includes('failed')) {
+      transactionPath = 'ORDER_FAILURE';
+    } else if (message.includes('validation')) {
+      transactionPath = 'VALIDATION';
+    } else if (message.includes('Received')) {
+      transactionPath = 'REQUEST_RECEIVED';
+    }
   }
   
   // Add API key context if available
@@ -1972,7 +2229,23 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
   }
   
   const pathInfo = transactionPath ? `[${transactionPath}]` : '';
-  const formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${message}`;
+  
+  // Handle object messages for structured logging
+  let formattedMessage;
+  if (typeof message === 'object' && message !== null && !(message instanceof Error)) {
+    const { operation, status, details = {} } = message;
+    let baseMessage = `${operation || 'Operation'}${status ? ` ${status}` : ''}`;
+    
+    // Add details as indented key-value pairs if present
+    if (Object.keys(details).length > 0) {
+      baseMessage += ':\n  - ' + Object.entries(details)
+        .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
+        .join('\n  - ');
+    }
+    formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${baseMessage}`;
+  } else {
+    formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${message}`;
+  }
   
   // Create structured log object
   const logObject = {
@@ -2030,34 +2303,21 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
 }
 
 /**
- * Logs details of a trade operation
- * @param {string} operation - Operation type (e.g., 'Opening', 'Closing')
- * @param {Object} position - Position details
+ * Groups related log messages into a single structured log entry
+ * @param {LOG_LEVEL} level - Log level (INFO, TRADE, ERROR, etc.)
+ * @param {string} groupTitle - Title for the group of messages
+ * @param {string[]} messages - Array of related messages
  * @param {string} requestId - Request identifier
- * @param {string} apiKey - API key
+ * @param {string} [apiKey] - Optional API key
+ * @param {Object} [env] - Environment variables
+ * @returns {Object} The log object that was created
  */
-async function logTradeOperation(operation, position, requestId, apiKey) {
-  try {
-    if (!position || typeof position !== 'object') {
-      throw new Error('Invalid position object');
-    }
-
-    const { instId, posSide, sz, avgPx } = position;
-    const details = [
-      `${operation} ${posSide || ''} position:`,
-      `  Symbol: ${instId || 'Unknown'}`,
-      `  Size: ${sz || 0} contracts`,
-      avgPx ? `  Price: $${avgPx}` : ''
-    ].filter(Boolean).join('\n');
-
-    await createLog(LOG_LEVEL.TRADE, details, requestId, apiKey);
-  } catch (error) {
-    await createLog(LOG_LEVEL.ERROR, 
-      `Failed to log trade operation: ${error.message}`, 
-      requestId, 
-      apiKey
-    );
-  }
+function logGroup(level, groupTitle, messages, requestId = 'unknown', apiKey = '', env = null) {
+  const formattedMessages = messages
+    .map(msg => `  - ${msg}`)
+    .join('\n');
+  
+  return createLog(level, `${groupTitle}:\n${formattedMessages}`, requestId, apiKey, env);
 }
 
 //=============================================================================
@@ -2070,7 +2330,14 @@ router.all('*', async (request, env) => {
   const clientIp = request.headers.get('cf-connecting-ip');
   
   // Log the incoming request
-  await createLog(LOG_LEVEL.INFO, `Received request from ${clientIp}`, requestId, null, env);
+  await createLog(LOG_LEVEL.INFO, {
+    operation: 'Webhook request',
+    status: 'received',
+    details: {
+      clientIp,
+      userAgent: request.headers.get('user-agent') || 'unknown'
+    }
+  }, requestId, null, env);
   
   // IP validation as the first step before any processing
   const ipAllowed = isAllowedIp(clientIp);
@@ -2078,7 +2345,13 @@ router.all('*', async (request, env) => {
   // Log the IP validation result
   await createLog(
     ipAllowed ? LOG_LEVEL.INFO : LOG_LEVEL.ERROR,
-    `IP validation ${ipAllowed ? 'passed' : 'failed'}: ${clientIp}`,
+    {
+      operation: 'IP validation',
+      status: ipAllowed ? 'passed' : 'failed',
+      details: {
+        clientIp
+      }
+    },
     requestId,
     null,
     env
@@ -2087,7 +2360,14 @@ router.all('*', async (request, env) => {
   if (!ipAllowed) {
     // Log additional security details
     await createLog(LOG_LEVEL.ERROR, 
-      `Security alert: Unauthorized access attempt from IP: ${clientIp}, User-Agent: ${request.headers.get('user-agent')}`,
+      {
+        operation: 'Security alert',
+        status: 'Unauthorized access attempt',
+        details: {
+          clientIp,
+          userAgent: request.headers.get('user-agent')
+        }
+      },
       requestId,
       null,
       env
@@ -2115,11 +2395,22 @@ router.post('/', async (request, env) => {
   const requestId = crypto.randomUUID();
   const clientIp = request.headers.get('cf-connecting-ip');
   
-  await createLog(LOG_LEVEL.INFO, `Received webhook request from ${clientIp}`, requestId, null, env);
+  await createLog(LOG_LEVEL.INFO, {
+    operation: 'Webhook request',
+    status: 'received',
+    details: {
+      clientIp,
+      userAgent: request.headers.get('user-agent') || 'unknown'
+    }
+  }, requestId, null, env);
     
   try {
     const payload = await request.json();
-    await createLog(LOG_LEVEL.INFO, `Received payload: ${JSON.stringify(redactSensitiveData(payload))}`, requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, {
+      operation: 'Webhook payload',
+      status: 'processing',
+      details: redactSensitiveData(payload)
+    }, requestId, null, env);
     
     // Token validation as the second step
     validateAuthToken(payload, env);
@@ -2129,7 +2420,10 @@ router.post('/', async (request, env) => {
 
     // Get API keys from database
     const apiKeys = await getApiKeys(env, requestId, payload.exchange);
-    await createLog(LOG_LEVEL.INFO, `Processing trades for ${apiKeys.length} accounts`, requestId, null, env);
+    await createLog(LOG_LEVEL.INFO, {
+      operation: 'Processing trades for multiple accounts',
+      details: { accounts: apiKeys.length }
+    }, requestId, null, env);
     
     // Select broker tag based on exchange
     const brokerTag = payload.exchange.toLowerCase() === 'okx' ? 
@@ -2166,7 +2460,14 @@ router.post('/', async (request, env) => {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    await createLog(LOG_LEVEL.ERROR, `Error: ${error.message}`, requestId, null, env);
+    await createLog(LOG_LEVEL.ERROR, {
+      operation: 'Webhook processing',
+      status: 'failed',
+      details: {
+        error: error.message,
+        stack: DEBUG ? error.stack : undefined
+      }
+    }, requestId, null, env);
     
     // Add specific handling for auth errors
     if (error.message === 'Authentication token is required' || error.message === 'Invalid authentication token') {
