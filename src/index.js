@@ -447,118 +447,130 @@ function getExchangeCredentials(exchange, env) {
 //=============================================================================
 
 /**
- * Makes a request to OKX API with automatic retry and rate limiting handling
- * @param {string} method - HTTP method (GET, POST, etc.)
+ * Updates makeOkxApiRequest to support operation tracking
+ * @param {string} method - HTTP method
  * @param {string} path - API endpoint path
- * @param {string} body - Request body for POST requests
+ * @param {string} body - Request body (for POST requests)
  * @param {Object} credentials - API credentials
  * @param {string} requestId - Request identifier
- * @param {Object} options - Additional options
- * @returns {Promise<Object>} API response
+ * @param {string} [parentOpId=null] - Parent operation ID for nested tracking
+ * @returns {Promise<Object>} API response data
  */
-async function makeOkxApiRequest(method, path, body, credentials, requestId, options = {}) {
-  const maxRetries = options.maxRetries || 3;
-  const baseDelay = options.baseDelay || 2000;
-  const rateLimitCodes = ['50011', '50061'];
+async function makeOkxApiRequest(method, path, body, credentials, requestId, parentOpId = null) {
+  const opContext = startOperation('ApiRequest', {
+    method,
+    path,
+    broker: 'OKX'
+  }, requestId, parentOpId);
   
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const { headers } = await generateOkxRequest(method, path, body, credentials, requestId);
-      
-      const requestOptions = {
-        method,
-        headers
-      };
-      
-      if (body && method !== 'GET') {
-        requestOptions.body = body;
-      }
-      
-      const url = `${OKX_API_URL}${path}`;
-      const response = await fetch(url, requestOptions);
-      const data = await response.json();
-      
-      // Check for rate limit errors
-      if (rateLimitCodes.includes(data.code)) {
-        const delay = data.code === '50061'
-          ? baseDelay * Math.pow(2, attempt) // Sub-account limit: longer delays
-          : baseDelay * Math.pow(1.5, attempt); // General rate limit: shorter delays
-        
-        await createLog(LOG_LEVEL.WARN,
-          `Rate limit hit (${data.code}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
-          requestId,
-          credentials?.apiKey
-        );
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      
-      // Check for other errors in sub-data
-      if (data.data && data.data[0] && rateLimitCodes.includes(data.data[0].sCode) && attempt < maxRetries - 1) {
-        const delay = data.data[0].sCode === '50061'
-          ? baseDelay * Math.pow(2, attempt)
-          : baseDelay * Math.pow(1.5, attempt);
-        
-        await createLog(LOG_LEVEL.WARN,
-          `API request failed with retryable error: ${data.data[0].sMsg}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
-          requestId,
-          credentials?.apiKey
-        );
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      
-      return data;
-    } catch (error) {
-      // Retry on network errors
-      if (attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        await createLog(LOG_LEVEL.WARN,
-          `Network error: ${error.message}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
-          requestId,
-          credentials?.apiKey
-        );
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      
-      throw error;
+  try {
+    const { headers } = await generateOkxRequest(method, path, body, credentials, requestId, opContext.operationId);
+    
+    const response = await fetch(`${OKX_API_URL}${path}`, {
+      method,
+      headers,
+      body: method === 'POST' ? body : undefined
+    });
+    
+    const data = await response.json();
+    
+    if (data.code !== '0') {
+      throw new Error(`API request failed: ${data.msg || 'Unknown error'}`);
     }
+    
+    return data;
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR, {
+      operation: `API request failed`,
+      details: { 
+        path,
+        error: error.message
+      },
+      opId: opContext.operationId
+    }, requestId);
+    throw error;
+  } finally {
+    // Simpler way to determine success
+    let success = true;
+    let error = null;
+    
+    // Check if we're in an error state
+    try {
+      // This will throw if we don't have a local error variable 
+      // (meaning no error occurred in the try block)
+      if (typeof localError !== 'undefined') {
+        success = false;
+        error = localError.message;
+      }
+    } catch (e) {
+      // If localError isn't defined, this means we succeeded
+    }
+    
+    endOperation(opContext, { 
+      success: success,
+      error: error
+    }, requestId);
   }
-  
-  throw new Error('Max retries exceeded');
 }
 
 /**
- * Generates common OKX request headers and signature
+ * Updates generateOkxRequest to support operation tracking
  * @param {string} method - HTTP method
  * @param {string} path - API endpoint path
  * @param {string} body - Request body
  * @param {Object} credentials - API credentials
  * @param {string} requestId - Request identifier
- * @returns {Object} Headers and signed request body
+ * @param {string} [parentOpId=null] - Parent operation ID for nested tracking
+ * @returns {Promise<Object>} Request headers with authentication
  */
-async function generateOkxRequest(method, path, body, credentials, requestId = 'unknown') {
-  const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+async function generateOkxRequest(method, path, body, credentials, requestId, parentOpId = null) {
+  const opContext = startOperation('SignatureGeneration', {
+    method,
+    path
+  }, requestId, parentOpId);
   
-  // Always include /api/v5 in signature path
-  const signaturePath = path.startsWith('/api/v5') ? path : `/api/v5${path}`;
-  
-  // Generate signature using stringified body
-  const signature = await sign(timestamp, method.toUpperCase(), signaturePath, body, credentials.secretKey, requestId);
-  
-  // Order headers exactly as in Python implementation
-  const headers = {
-    'Content-Type': 'application/json',
-    'OK-ACCESS-KEY': credentials.apiKey,
-    'OK-ACCESS-SIGN': signature,
-    'OK-ACCESS-TIMESTAMP': timestamp,
-    'OK-ACCESS-PASSPHRASE': credentials.passphrase
-  };
-
-  // No need to duplicate logging here as the sign function now provides comprehensive logs
-  
-  return { headers, timestamp };
+  try {
+    const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+    const { apiKey, secretKey, passphrase } = credentials;
+    
+    // Use the existing sign function instead of creating a new implementation
+    const signature = await sign(timestamp, method, path, body, secretKey, requestId);
+    
+    const headers = {
+      'OK-ACCESS-KEY': apiKey,
+      'OK-ACCESS-SIGN': signature,
+      'OK-ACCESS-TIMESTAMP': timestamp,
+      'OK-ACCESS-PASSPHRASE': passphrase,
+      'Content-Type': 'application/json'
+    };
+    
+    if (credentials.brokerTag) {
+      headers['x-simulated-trading'] = '1';
+    }
+    
+    // The sign function already logs signature details, so we don't need to duplicate that
+    
+    return { headers, timestamp };
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR, {
+      operation: `Signature generation failed`,
+      details: { error: error.message },
+      opId: opContext.operationId
+    }, requestId);
+    throw error;
+  } finally {
+    // Use a simple success/failure check instead of arguments.callee
+    let success = true;
+    try {
+      // If we've reached this point without an exception in the try block,
+      // then we were successful unless an error was thrown and caught
+      if (error) success = false;
+    } catch (e) {
+      // If error isn't defined, this means we succeeded
+    }
+    
+    endOperation(opContext, { success }, requestId);
+  }
 }
 
 /**
@@ -572,13 +584,13 @@ async function generateOkxRequest(method, path, body, credentials, requestId = '
 async function getMaxAvailSize(instId, credentials, requestId, payload) {
   // Validate credentials structure
   if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-    createLog('API', 'Invalid credentials structure provided to getMaxAvailSize', requestId);
+    createLog(LOG_LEVEL.API, 'Invalid credentials structure provided to getMaxAvailSize', requestId);
     throw new Error('Invalid credentials structure');
   }
 
   // Validate margin mode
   if (!payload || !payload.marginMode || !['cross', 'isolated'].includes(payload.marginMode)) {
-    createLog('API', `Invalid margin mode: ${payload?.marginMode}`, requestId);
+    createLog(LOG_LEVEL.API, `Invalid margin mode: ${payload?.marginMode}`, requestId);
     throw new Error('Invalid margin mode. Must be either "cross" or "isolated"');
   }
 
@@ -608,7 +620,7 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
         requestId
       );
 
-      createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`, requestId);
+      createLog(LOG_LEVEL.API, `Making request to: https://www.okx.com${path}${queryParams}`, requestId);
       const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
       const data = await response.json();
       
@@ -622,11 +634,11 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
         throw new Error('Invalid max size response: ' + JSON.stringify(result));
       }
 
-      createLog('API', `Max size response: ${JSON.stringify(data)}`, requestId);
+      createLog(LOG_LEVEL.API, `Max size response: ${JSON.stringify(data)}`, requestId);
 
       // For inverse perpetuals (-USD-SWAP), return the contract numbers directly
       if (instId.endsWith('-USD-SWAP')) {
-        createLog('API', `Processing inverse perpetual ${instId}`, requestId);
+        createLog(LOG_LEVEL.API, `Processing inverse perpetual ${instId}`, requestId);
         
         // OKX returns the number of contracts directly for inverse swaps
         const maxBuy = result.maxBuy;
@@ -662,11 +674,11 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
       
       return data.data[0];
     } catch (error) {
-      createLog('API', `Failed to get instrument info: ${error.message}`, requestId);
+      createLog(LOG_LEVEL.API, `Failed to get instrument info: ${error.message}`, requestId);
       throw error;
     }
   } catch (error) {
-    createLog('API', `Failed to get max size: ${error.message}`, requestId);
+    createLog(LOG_LEVEL.API, `Failed to get max size: ${error.message}`, requestId);
     throw new Error(`Failed to get max size: ${error.message}`);
   }
 }
@@ -688,8 +700,8 @@ async function getAccountBalance(credentials, requestId) {
       requestId
     );
 
-    createLog('API', `Making request to: https://www.okx.com${path}`, requestId);
-    createLog('API', `Headers: ${JSON.stringify(headers, null, 2)}`, requestId);
+    createLog(LOG_LEVEL.API, `Making request to: https://www.okx.com${path}`, requestId);
+    createLog(LOG_LEVEL.API, `Headers: ${JSON.stringify(headers, null, 2)}`, requestId);
 
     const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
@@ -697,7 +709,7 @@ async function getAccountBalance(credentials, requestId) {
     });
 
     const text = await response.text();
-    createLog('API', `Response: ${text}`, requestId);
+    createLog(LOG_LEVEL.API, `Response: ${text}`, requestId);
 
     const data = JSON.parse(text);
     if (!response.ok || data.code === '1') {
@@ -706,7 +718,7 @@ async function getAccountBalance(credentials, requestId) {
 
     return data.data[0];
   } catch (error) {
-    createLog('API', `Failed to get account balance: ${error.message}`, requestId);
+    createLog(LOG_LEVEL.API, `Failed to get account balance: ${error.message}`, requestId);
     throw error;
   }
 }
@@ -768,7 +780,7 @@ async function getCurrentPosition(instId, credentials, requestId) {
       requestId
     );
 
-    createLog('API', `Making request to: https://www.okx.com${path}`, requestId);
+    createLog(LOG_LEVEL.API, `Making request to: https://www.okx.com${path}`, requestId);
     const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
       headers
@@ -797,7 +809,7 @@ async function getCurrentPosition(instId, credentials, requestId) {
     }, requestId);
     return position;
   } catch (error) {
-    createLog('API', `Failed to get position: ${error.message}`, requestId);
+    createLog(LOG_LEVEL.API, `Failed to get position: ${error.message}`, requestId);
     throw error;
   }
 }
@@ -848,11 +860,10 @@ async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
     }, requestId);
     return { maxBuy, maxSell };
   } catch (error) {
-    createLog('API', `Failed to get max size: ${error.message}`, requestId);
+    createLog(LOG_LEVEL.API, `Failed to get max size: ${error.message}`, requestId);
     throw error;
   }
 }
-
 
 //=============================================================================
 // [TRADE] Trade Execution Functions
@@ -870,7 +881,7 @@ async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
 async function executeTrade(payload, credentials, brokerTag, requestId, env) {
   // Validate credentials structure
   if (!credentials || !credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-    createLog('API', 'Invalid credentials structure provided to executeTrade', requestId);
+    createLog(LOG_LEVEL.API, 'Invalid credentials structure provided to executeTrade', requestId);
     throw new Error('Invalid credentials structure');
   }
 
@@ -1239,7 +1250,9 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     tradeLogMessages.push(`Entry price: ${position.avgPx || 'unknown'}, Mark price: ${position.markPx || 'unknown'}, PnL: ${position.pnl || '0'}`);
 
     // Log the grouped messages for position retrieval and preparation
-    logGroup('TRADE', `Position Closing - ${instId} (Preparation)`, tradeLogMessages, requestId, credentials.apiKey);
+    // ONLY include "DRY RUN" in the title if actually in dry run mode
+    const logTitle = dryRun ? `Position Closing - ${instId} (DRY RUN)` : `Position Closing - ${instId} (Preparation)`;
+    logGroup('TRADE', logTitle, tradeLogMessages, requestId, credentials.apiKey);
 
     // Prepare close order data
     const orderData = {
@@ -1288,17 +1301,15 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     return { successful: result.successful, failed: result.failed, sz: orderSize };
   } catch (error) {
     // Only log errors that haven't been logged before
-    if (!error.logged && !error.message.includes('Order placed')) {
-      createLog('ERROR', `Failed to close position: ${error.message}`, requestId, credentials.apiKey, env);
-      error.logged = true;
-      
-      // Group log for error case
-      logGroup('ERROR', `Position Closing Error - ${instId}`, [
-        ...tradeLogMessages,
-        `Error: ${error.message}`
-      ], requestId, credentials.apiKey);
-    }
-    return { successful: 0, failed: 1 };
+    createLog('ERROR', `Failed to close position: ${error.message}`, requestId, credentials.apiKey);
+    
+    // Log detailed error information
+    logGroup('ERROR', `Position Closing - ${instId} (Error)`, [
+      ...tradeLogMessages,
+      `Error: ${error.message}`
+    ], requestId, credentials.apiKey);
+    
+    return { successful: 0, failed: 1, sz: '0' };
   }
 }
 
@@ -1492,8 +1503,9 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
     tradeLogMessages.push(`Closing ${position.posSide} position for ${instId} with size ${orderSize} using ${side} order`);
     tradeLogMessages.push(`Entry price: ${position.avgPx || 'unknown'}, Mark price: ${position.markPx || 'unknown'}, PnL: ${position.pnl || '0'}`);
 
-    // Log the grouped messages for position details
-    logGroup('TRADE', `Position Closing - ${instId}`, tradeLogMessages, requestId, credentials.apiKey);
+    // ONLY include "DRY RUN" in the title if actually in dry run mode
+    const logTitle = dryRun ? `Position Closing - ${instId} (DRY RUN)` : `Position Closing - ${instId}`;
+    logGroup('TRADE', logTitle, tradeLogMessages, requestId, credentials.apiKey);
 
     // Prepare close order data
     const orderData = {
@@ -1510,10 +1522,8 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
 
     // If dryRun, return the order data without executing
     if (dryRun) {
-      logGroup('TRADE', `Position Closing - ${instId} (DRY RUN)`, [
-        ...tradeLogMessages,
-        `DRY RUN - no order executed`
-      ], requestId, credentials.apiKey);
+      // We already included "DRY RUN" in the main log title above, no need for a separate log
+      tradeLogMessages.push(`DRY RUN - no order executed`);
       return { orderData };
     }
 
@@ -1557,52 +1567,86 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
 }
 
 /**
- * Place a single order
- * @param {Object} orderData - Order data
- * @param {Object} credentials - API credentials
- * @param {string} requestId - Request ID
+ * Places an order with the OKX API
+ * @param {Object} orderData - Order details to submit
+ * @param {Object} credentials - API credentials for authentication
+ * @param {string} requestId - Request identifier
  * @param {Object} env - Environment variables
- * @returns {Promise<Object>} Order result
+ * @param {string} [parentOpId=null] - Parent operation ID for nested tracking
+ * @returns {Object} Order placement result 
  */
-async function placeOrder(orderData, credentials, requestId, env) {
-  // Check if this is a dry run by examining the orderData object
-  if (orderData.dryRun) {
-    await createLog(LOG_LEVEL.INFO, `DRY RUN: Would place order: ${JSON.stringify(orderData)}`, requestId, credentials.apiKey);
-    return { successful: 1, failed: 0, dryRun: true };
-  }
-  
-  const path = '/api/v5/trade/order';
-  const body = JSON.stringify(orderData);
+async function placeOrder(orderData, credentials, requestId, env, parentOpId = null) {
+  const opContext = startOperation('OrderPlacement', {
+    instrument: orderData.instId,
+    side: orderData.side,
+    size: orderData.sz
+  }, requestId, parentOpId);
   
   try {
-    const data = await makeOkxApiRequest('POST', path, body, credentials, requestId);
-    
-    if (data.data && data.data[0]) {
-      const result = data.data[0];
-      if (result.sCode === '0') {
-        await createLog(LOG_LEVEL.TRADE,
-          `Order successful: ${orderData.sz} contracts`,
-          requestId,
-          credentials.apiKey
-        );
-        return { successful: 1, failed: 0 };
-      } else {
-        await createLog(LOG_LEVEL.ERROR,
-          `Order failed: ${result.sMsg}`,
-          requestId,
-          credentials.apiKey
-        );
-        return { successful: 0, failed: 1, error: result.sMsg };
-      }
+    // Check if this is a dry run by examining the orderData object
+    if (orderData.dryRun) {
+      await createLog(LOG_LEVEL.INFO, {
+        operation: `DRY RUN: Would place order`,
+        details: orderData,
+        opId: opContext.operationId
+      }, requestId, credentials.apiKey);
+      return { successful: 1, failed: 0, dryRun: true };
     }
-    return { successful: 0, failed: 1, error: 'No response data' };
-  } catch (error) {
-    await createLog(LOG_LEVEL.ERROR,
-      `Order placement failed: ${error.message}`,
-      requestId,
-      credentials.apiKey
-    );
-    return { successful: 0, failed: 1, error: error.message };
+    
+    const path = '/api/v5/trade/order';
+    const body = JSON.stringify(orderData);
+    
+    try {
+      const data = await makeOkxApiRequest('POST', path, body, credentials, requestId, opContext.operationId);
+      
+      if (data.data && data.data[0]) {
+        const result = data.data[0];
+        if (result.sCode === '0') {
+          await createLog(LOG_LEVEL.TRADE, {
+            operation: `Order successful`,
+            details: { size: orderData.sz + ' contracts' },
+            opId: opContext.operationId
+          }, requestId, credentials.apiKey);
+          return { successful: 1, failed: 0 };
+        } else {
+          await createLog(LOG_LEVEL.ERROR, {
+            operation: `Order failed`,
+            details: { error: result.sMsg },
+            opId: opContext.operationId
+          }, requestId, credentials.apiKey);
+          return { successful: 0, failed: 1, error: result.sMsg };
+        }
+      }
+      return { successful: 0, failed: 1, error: 'No response data' };
+    } catch (error) {
+      await createLog(LOG_LEVEL.ERROR, {
+        operation: `Order placement failed`,
+        details: { error: error.message },
+        opId: opContext.operationId
+      }, requestId, credentials.apiKey);
+      return { successful: 0, failed: 1, error: error.message };
+    }
+  } finally {
+    // Simpler way to determine success
+    let success = true;
+    let error = null;
+    
+    // Check if we're in an error state
+    try {
+      // This will throw if we don't have a local error variable 
+      // (meaning no error occurred in the try block)
+      if (typeof localError !== 'undefined') {
+        success = false;
+        error = localError.message;
+      }
+    } catch (e) {
+      // If localError isn't defined, this means we succeeded
+    }
+    
+    endOperation(opContext, { 
+      success: success,
+      error: error
+    }, requestId);
   }
 }
 
@@ -1638,50 +1682,111 @@ function validateTradeResponse(response) {
 }
 
 /**
- * Leverage setting
- * @param {Object} data - Leverage configuration
+ * Sets the leverage for a trading pair
+ * @param {Object} data - Leverage settings data
  * @param {Object} credentials - API credentials
- * @param {string} requestId - Request ID
+ * @param {string} requestId - Request identifier 
  * @param {Object} env - Environment variables
- * @returns {void}
+ * @param {string} [parentOpId=null] - Parent operation ID for nested tracking
+ * @returns {Promise<void>}
  */
-async function setLeverage(data, credentials, requestId, env) {
-  await createLog(LOG_LEVEL.INFO, `Setting leverage to ${data.lever}x for ${data.instId}`, requestId, credentials.apiKey, env);
+async function setLeverage(data, credentials, requestId, env, parentOpId = null) {
+  const opContext = startOperation('LeverageConfiguration', {
+    instrument: data.instId,
+    leverage: data.lever,
+    marginMode: data.mgnMode
+  }, requestId, parentOpId);
   
-  const path = '/api/v5/account/set-leverage';
-  const body = JSON.stringify(data);
-  const { headers } = await generateOkxRequest(
-    'POST',
-    path,
-    body,
-    credentials,
-    requestId
-  );
+  try {
+    await createLog(LOG_LEVEL.INFO, {
+      operation: `Setting leverage`,
+      details: { 
+        leverage: data.lever + 'x',
+        instrument: data.instId
+      },
+      opId: opContext.operationId
+    }, requestId, credentials.apiKey, env);
+    
+    const path = '/api/v5/account/set-leverage';
+    const body = JSON.stringify(data);
+    const { headers } = await generateOkxRequest(
+      'POST',
+      path,
+      body,
+      credentials,
+      requestId,
+      opContext.operationId
+    );
 
-  const response = await fetch(`${OKX_API_URL}${path}`, {
-    method: 'POST',
-    headers,
-    body
-  });
-
-  const result = await response.json();
-  await createLog(LOG_LEVEL.DEBUG, `Leverage response: ${JSON.stringify(redactSensitiveData(result))}`, requestId, credentials.apiKey, env);
-
-  if (result.code !== '0') {
-    throw new Error(`Failed to set leverage: ${result.msg}`);
+    createLog(LOG_LEVEL.API, `Making request to: https://www.okx.com${path}`, requestId);
+    const response = await fetch(`https://www.okx.com${path}`, {
+      method: 'POST',
+      headers,
+      body
+    });
+  
+    const result = await response.json();
+    await createLog(LOG_LEVEL.DEBUG, {
+      operation: `Leverage response`,
+      details: redactSensitiveData(result),
+      opId: opContext.operationId
+    }, requestId, credentials.apiKey, env);
+  
+    if (result.code !== '0') {
+      throw new Error(`Failed to set leverage: ${result.msg}`);
+    }
+    
+    return result;
+  } catch (error) {
+    await createLog(LOG_LEVEL.ERROR, {
+      operation: `Leverage configuration failed`,
+      details: { error: error.message },
+      opId: opContext.operationId
+    }, requestId, credentials.apiKey);
+    throw error; // Re-throw to maintain original error flow
+  } finally {
+    // Simpler way to determine success
+    let success = true;
+    let error = null;
+    
+    // Check if we're in an error state
+    try {
+      // This will throw if we don't have a local error variable 
+      // (meaning no error occurred in the try block)
+      if (typeof localError !== 'undefined') {
+        success = false;
+        error = localError.message;
+      }
+    } catch (e) {
+      // If localError isn't defined, this means we succeeded
+    }
+    
+    endOperation(opContext, { 
+      success: success,
+      error: error
+    }, requestId);
   }
 }
 
 /**
- * Multi-account trade execution
+ * Execute trades for multiple accounts
  * @param {Object} payload - Trade payload
- * @param {Array} apiKeys - API keys for accounts
+ * @param {Array} apiKeys - API keys for multiple accounts
  * @param {string} brokerTag - Broker tag
- * @param {string} requestId - Request ID
+ * @param {string} requestId - Request identifier
  * @param {Object} env - Environment variables
- * @returns {Promise<Object>} Trade execution result
+ * @param {string} parentOpId - Parent operation ID (optional)
+ * @returns {Object} Trade results
  */
-async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env) {
+async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId, env, parentOpId = null) {
+  // Start the operation tracking
+  const opContext = startOperation('MultiAccountTrade', {
+    accounts: apiKeys.length,
+    symbol: payload.symbol,
+    type: payload.type,
+    action: payload.closePosition ? 'close' : 'open'
+  }, requestId, parentOpId);
+  
   let totalSuccessful = 0;
   let totalFailed = 0;
   let totalSize = 0;
@@ -1692,7 +1797,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     
     createLog('TRADE', {
       operation: 'Starting multi-account trade execution',
-      details: { accounts: apiKeys.length }
+      details: { accounts: apiKeys.length },
+      opId: opContext.operationId
     }, requestId);
     
     // First, collect all orders using dryRun
@@ -1704,43 +1810,50 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         passphrase: account.passphrase
       };
 
-  // Validate credentials
-  if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
-    const accountId = credentials.apiKey ? credentials.apiKey.substring(0, 4) : 'unknown';
-    const errorMsg = 'Invalid credentials: missing required fields';
-    createLog('ERROR', {
-      operation: 'Credential validation',
-      status: 'failed',
-      details: {
-        accountKey: mask(credentials.apiKey),
-        reason: errorMsg
+      // Validate credentials
+      if (!credentials.apiKey || !credentials.secretKey || !credentials.passphrase) {
+        const accountId = credentials.apiKey ? credentials.apiKey.substring(0, 4) : 'unknown';
+        const errorMsg = 'Invalid credentials: missing required fields';
+        createLog('ERROR', {
+          operation: 'Credential validation',
+          status: 'failed',
+          details: {
+            accountKey: mask(credentials.apiKey),
+            reason: errorMsg
+          },
+          opId: opContext.operationId
+        }, requestId);
+        
+        // Add failed order to allOrders for credential issues
+        allOrders.push({
+          success: false,
+          order: {
+            accountId,
+            symbol: payload.symbol
+          },
+          credentials,
+          error: errorMsg
+        });
+        
+        totalFailed++;
+        continue;
       }
-    }, requestId);
-    
-    // Add failed order to allOrders for credential issues
-    allOrders.push({
-      success: false,
-      order: {
-        accountId,
-        symbol: payload.symbol
-      },
-      credentials,
-      error: errorMsg
-    });
-    
-    totalFailed++;
-    continue;
-  }
 
       let result;
       try {
+        // Start order preparation sub-operation
+        const prepOpContext = startOperation('OrderPreparation', {
+          accountKey: mask(credentials.apiKey),
+          symbol: payload.symbol
+        }, requestId, opContext.operationId);
+        
         // Prepare order based on trade type
         if (payload.type === 'spot') {
-          result = await executeSpotTrade(payload, credentials, brokerTag, requestId, env, true);
+          result = await executeSpotTrade(payload, credentials, brokerTag, requestId, env, true, prepOpContext.operationId);
         } else if (payload.type === 'perps') {
-          result = await executePerpsOrder(payload, credentials, brokerTag, requestId, env, true);
+          result = await executePerpsOrder(payload, credentials, brokerTag, requestId, env, true, prepOpContext.operationId);
         } else if (payload.type === 'invperps') {
-          result = await executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env, true);
+          result = await executeInvPerpsOrder(payload, credentials, brokerTag, requestId, env, true, prepOpContext.operationId);
         } else {
           throw new Error(`Unsupported trade type: ${payload.type}`);
         }
@@ -1753,24 +1866,43 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
             result.orderData.dryRun = true;
           }
           allOrders.push({ order: result.orderData, credentials, success: true });
-          createLog('TRADE', {
-            operation: 'Order preparation',
+          
+          // End order preparation sub-operation with success
+          endOperation(prepOpContext, {
             status: 'success',
             details: {
               accountKey: mask(credentials.apiKey),
               size: result.orderData.sz || '0'
             }
           }, requestId);
+          
+          createLog('TRADE', {
+            operation: 'Order preparation',
+            status: 'success',
+            details: {
+              accountKey: mask(credentials.apiKey),
+              size: result.orderData.sz || '0'
+            },
+            opId: opContext.operationId
+          }, requestId);
         } else {
           const accountId = credentials.apiKey.substring(0, 4);
           const errorMsg = 'Order preparation failed: no order data returned';
+          
+          // End order preparation sub-operation with failure
+          endOperation(prepOpContext, {
+            status: 'failed',
+            error: errorMsg
+          }, requestId);
+          
           createLog('ERROR', {
             operation: 'Order preparation',
             status: 'failed',
             details: {
               accountKey: mask(credentials.apiKey),
               reason: errorMsg
-            }
+            },
+            opId: opContext.operationId
           }, requestId);
           
           // Add failed order to allOrders
@@ -1794,7 +1926,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
           details: {
             accountKey: mask(credentials.apiKey),
             reason: error.message
-          }
+          },
+          opId: opContext.operationId
         }, requestId);
         
         // Add failed order to allOrders for proper tracking
@@ -1816,20 +1949,40 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       createLog('TRADE', {
         operation: 'Order execution',
         status: 'skipped',
-        details: { reason: 'No valid orders to execute' }
+        details: { reason: 'No valid orders to execute' },
+        opId: opContext.operationId
       }, requestId);
+      
+      // End the main operation with zero results
+      endOperation(opContext, {
+        status: 'skipped',
+        details: {
+          reason: 'No valid orders to execute',
+          successful: 0,
+          failed: totalFailed,
+          size: 0
+        }
+      }, requestId);
+      
       return { successful: 0, failed: totalFailed, sz: 0 };
     }
 
+    // Start order execution sub-operation
+    const execOpContext = startOperation('OrderExecution', {
+      count: allOrders.length,
+      symbol: payload.symbol
+    }, requestId, opContext.operationId);
+    
     createLog('TRADE', {
       operation: 'Executing orders',
-      details: { count: allOrders.length }
+      details: { count: allOrders.length },
+      opId: opContext.operationId
     }, requestId);
 
     // Execute each order individually
     for (const orderObj of allOrders) {
       try {
-        const result = await placeOrder(orderObj.order, orderObj.credentials, requestId, env);
+        const result = await placeOrder(orderObj.order, orderObj.credentials, requestId, env, execOpContext.operationId);
         
         if (result.successful) {
           totalSuccessful++;
@@ -1840,7 +1993,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
             details: {
               accountKey: mask(orderObj.credentials.apiKey),
               size: orderObj.order.sz || '0'
-            }
+            },
+            opId: execOpContext.operationId
           }, requestId);
           allOrders[allOrders.indexOf(orderObj)].success = true;
         } else {
@@ -1852,7 +2006,8 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
             details: {
               accountKey: mask(orderObj.credentials.apiKey),
               reason: errorMsg
-            }
+            },
+            opId: execOpContext.operationId
           }, requestId);
           allOrders[allOrders.indexOf(orderObj)].success = false;
           allOrders[allOrders.indexOf(orderObj)].error = errorMsg;
@@ -1864,13 +2019,24 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
           details: {
             accountKey: mask(orderObj.credentials.apiKey),
             reason: error.message
-          }
+          },
+          opId: execOpContext.operationId
         }, requestId);
         totalFailed++;
         allOrders[allOrders.indexOf(orderObj)].success = false;
         allOrders[allOrders.indexOf(orderObj)].error = error.message;
       }
     }
+    
+    // End order execution sub-operation
+    endOperation(execOpContext, {
+      status: totalFailed === 0 ? 'success' : 'partial',
+      details: {
+        successful: totalSuccessful,
+        failed: totalFailed,
+        totalSize: totalSize.toFixed(8)
+      }
+    }, requestId);
 
     // Create detailed summary
     const summary = {
@@ -1882,12 +2048,6 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       Symbol: payload.symbol
     };
 
-    createLog('TRADE', {
-      operation: 'Trade summary',
-      status: 'success',
-      details: summary
-    }, requestId);
-
     const result = {
       successful: totalSuccessful,
       failed: totalFailed,
@@ -1897,7 +2057,14 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     // Send Telegram notification
     try {
       const failedOrders = allOrders.filter(o => !o.success);
-      createLog('DEBUG', `Found ${failedOrders.length} failed orders for request ${requestId}`, requestId);
+      createLog('DEBUG', {
+        operation: 'Order failure check',
+        details: {
+          failedCount: failedOrders.length,
+          requestId: requestId
+        },
+        opId: opContext.operationId
+      }, requestId);
       
       const telegramMsg = formatTradeMessage({
         symbol: payload.symbol,
@@ -1922,8 +2089,19 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
     } catch (error) {
-      createLog('ERROR', `Failed to send notification: ${error.message}`, requestId);
+      createLog('ERROR', {
+        operation: 'Notification sending',
+        status: 'failed',
+        details: { error: error.message },
+        opId: opContext.operationId
+      }, requestId);
     }
+    
+    // End the main operation with success
+    endOperation(opContext, {
+      status: 'success',
+      details: summary
+    }, requestId);
 
     return result;
   } catch (error) {
@@ -1932,6 +2110,17 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
       failed: totalFailed,
       sz: totalSize.toFixed(8)
     };
+    
+    // End the main operation with failure
+    endOperation(opContext, {
+      status: 'failed',
+      error: error.message,
+      details: {
+        successful: totalSuccessful,
+        failed: totalFailed,
+        totalSize: totalSize.toFixed(8)
+      }
+    }, requestId);
 
     // Send Telegram notification for error
     try {
@@ -1959,7 +2148,12 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
         await sendTelegramMessage(telegramMsg.type, telegramMsg.message, env);
       }
     } catch (telegramError) {
-      createLog('ERROR', `Failed to send error notification: ${telegramError.message}`, requestId);
+      createLog('ERROR', {
+        operation: 'Error notification',
+        status: 'failed',
+        details: { error: telegramError.message },
+        opId: opContext.operationId
+      }, requestId);
     }
 
     return result;
@@ -2032,7 +2226,9 @@ const LOG_LEVEL = {
   ERROR: 'ERROR',
   INFO: 'INFO',
   DEBUG: 'DEBUG',
-  TRADE: 'TRADE'
+  TRADE: 'TRADE',
+  TRACE: 'TRACE',
+  API: 'API'
 };
 
 /**
@@ -2255,8 +2451,11 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
   // Handle object messages for structured logging
   let formattedMessage;
   if (typeof message === 'object' && message !== null && !(message instanceof Error)) {
-    const { operation, status, details = {} } = message;
+    const { operation, status, details = {}, opId = null } = message;
     let baseMessage = `${operation || 'Operation'}${status ? ` ${status}` : ''}`;
+    
+    // Add operation ID if present
+    const opIdInfo = opId ? `[opId:${opId}]` : '';
     
     // Add details as indented key-value pairs if present
     if (Object.keys(details).length > 0) {
@@ -2264,7 +2463,7 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
         .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
         .join('\n  - ');
     }
-    formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${baseMessage}`;
+    formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext}${opIdInfo} ${baseMessage}`;
   } else {
     formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${message}`;
   }
@@ -2277,6 +2476,16 @@ function createLog(level, message, requestId, apiKey = '', env = null) {
     requestId: requestId || 'unknown',
     context: {}
   };
+  
+  // If the message is an object with an opId, include it in the context
+  if (typeof message === 'object' && message !== null && message.opId) {
+    logObject.context.opId = message.opId;
+    
+    // Include parent operation ID if present
+    if (message.parentOpId) {
+      logObject.context.parentOpId = message.parentOpId;
+    }
+  }
   
   // Add API key if provided (with masking)
   if (apiKey) {
@@ -2340,6 +2549,60 @@ function logGroup(level, groupTitle, messages, requestId = 'unknown', apiKey = '
     .join('\n');
   
   return createLog(level, `${groupTitle}:\n${formattedMessages}`, requestId, apiKey, env);
+}
+
+/**
+ * Starts and logs a new operation
+ * @param {string} operationType - Type of operation (e.g., "MultiAccountTrade")
+ * @param {Object} details - Operation details/parameters
+ * @param {string} requestId - Request identifier
+ * @param {string} parentOpId - Parent operation ID (optional)
+ * @returns {Object} Operation context with timing and ID
+ */
+function startOperation(operationType, details, requestId, parentOpId = null) {
+  const operationId = crypto.randomUUID().split('-')[0]; // Short UUID
+  const startTime = performance.now();
+  
+  const logDetails = {
+    operation: operationType,
+    stage: 'START',
+    opId: operationId,
+    ...details
+  };
+  
+  if (parentOpId) {
+    logDetails.parentOpId = parentOpId;
+  }
+  
+  createLog('TRACE', logDetails, requestId);
+  
+  return { 
+    operationId, 
+    startTime, 
+    operationType
+  };
+}
+
+/**
+ * Ends and logs completion of an operation
+ * @param {Object} opContext - Context from startOperation
+ * @param {Object} results - Operation results
+ * @param {string} requestId - Request identifier
+ * @returns {Object} Result with duration
+ */
+function endOperation(opContext, results, requestId) {
+  const { operationId, startTime, operationType } = opContext;
+  const duration = Math.round(performance.now() - startTime);
+  
+  createLog('TRACE', {
+    operation: operationType,
+    stage: 'END',
+    opId: operationId,
+    duration: `${duration}ms`,
+    ...results
+  }, requestId);
+  
+  return { duration };
 }
 
 //=============================================================================

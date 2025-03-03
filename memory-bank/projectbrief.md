@@ -13,6 +13,7 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 - Place market orders with automatic price discovery
 - Provide comprehensive logging and notifications
 - Support testing mode with dry run capabilities for order validation
+- Implement an operation tracking and logging system to monitor and analyze trade executions
 
 ### Non-Functional Requirements
 - **Security**: Implement robust middleware-based authentication, IP validation, and data protection
@@ -28,6 +29,7 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 3. Maintain comprehensive logging and notifications for trade monitoring
 4. Implement robust security measures with multi-layered protection
 5. Comply with OKX API rate limits and specifications
+6. Develop an operation tracking and logging system to monitor and analyze trade executions
 
 ## Project Scope
 ### In Scope
@@ -38,6 +40,7 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 - Multi-account support
 - Telegram notifications
 - Comprehensive logging
+- Operation tracking and logging system
 
 ### Out of Scope
 - User interface for configuration
@@ -53,3 +56,4 @@ The OKX Trading Webhook API is a high-performance, secure service built on Cloud
 - Efficient error handling and logging
 - Complete security for all API endpoints 
 - Compliance with OKX rate limits
+- Effective operation tracking and logging system

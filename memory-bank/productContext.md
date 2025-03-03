@@ -51,6 +51,8 @@ Key motivations for the project include:
 - **Error Handling**: Graceful error handling with detailed error messages
 - **DryRun Testing**: Simulation mode for testing trade execution without placing actual orders
 - **Performance**: Scalable architecture handling 80+ requests per second under load
+- **Operation Tracking**: Parent-child operation tracking for traceability and performance analysis
+- **Structured Logging**: Comprehensive logging system with multiple severity levels
 
 ### User Experience
 ### Reliability
@@ -112,3 +114,30 @@ Key motivations for the project include:
 - **OKX Exchange API**: For executing trades and retrieving market data
 - **Telegram API**: For notifications about trades and system status
 - **Logging System**: For tracking system activity and performance
+
+## Operational Excellence
+
+The API is designed with operational excellence in mind, featuring:
+
+1. **Comprehensive Logging**: Structured logging with consistent levels (ERROR, INFO, DEBUG, TRADE, TRACE, API)
+
+2. **Operation Tracking Framework**: 
+   - Unique IDs for each operation
+   - Parent-child relationships for nested operations
+   - Automatic timing of operation duration
+   - Status tracking for success/failure
+
+3. **Performance Monitoring**:
+   - Execution time measurement for all operations
+   - Identification of performance bottlenecks
+   - API call latency tracking
+
+4. **Error Traceability**:
+   - Detailed error context in logs
+   - Operation ID correlation for error tracking
+   - Request ID persistence across the execution chain
+
+5. **Security Monitoring**:
+   - Logging of all security events (successful and failed)
+   - IP validation tracking for unauthorized attempts
+   - Authentication failure monitoring

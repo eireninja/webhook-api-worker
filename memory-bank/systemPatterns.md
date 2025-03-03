@@ -12,8 +12,9 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 4. **Trade Execution Engine**: Processes trade requests and communicates with OKX API
 5. **Database Interface**: Retrieves API keys and credentials from D1 database
 6. **Logging System**: Records detailed information about requests, security events, and execution status
-7. **Notification Service**: Sends alerts and trade information to Telegram
-8. **Testing Features**: Includes dryRun mode for simulating trades without execution
+7. **Operation Tracking**: Provides structured tracing of operations with parent-child relationships
+8. **Notification Service**: Sends alerts and trade information to Telegram
+9. **Testing Features**: Includes dryRun mode for simulating trades without execution
 
 ## Key Technical Decisions
 
@@ -28,6 +29,14 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 ### Multi-Layered Security
 - **Decision**: Implement defense-in-depth with IP validation and token-based authentication
 - **Rationale**: Provides multiple security barriers to protect against unauthorized access
+
+### Operation Tracking System
+- **Decision**: Implement structured operation tracking with parent-child relationships
+- **Rationale**: Enhances traceability, simplifies debugging, and provides performance insights
+
+### Structured Logging
+- **Decision**: Use consistent log levels and structured log formats
+- **Rationale**: Improves log searchability, readability, and analysis
 
 ### Token-Based Authentication
 - **Decision**: Implement simple token-based authentication for webhooks
@@ -65,6 +74,12 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 ### Middleware Pattern
 - Implements cross-cutting concerns like security as middleware that runs before route handlers
 
+### Observer Pattern
+- Used in the logging system to record events without tight coupling to business logic
+
+### Chain of Responsibility Pattern
+- Implemented in the operation tracking system for parent-child operation relationships
+
 ## Component Relationships
 
 ```
@@ -82,11 +97,12 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │  Telegram API   │◀─────▶ Notification    │◀─────▶ Logging         │
 └─────────────────┘      └─────────────────┘      └─────────────────┘
-                                 │
-                                 ▼
-                         ┌─────────────────┐
-                         │ Database (D1)   │
-                         └─────────────────┘
+                                 │                          │
+                                 ▼                          ▼
+                         ┌─────────────────┐      ┌─────────────────┐
+                         │ Database (D1)   │      │ Operation       │
+                         └─────────────────┘      │ Tracking        │
+                                                  └─────────────────┘
 ```
 
 ## Security Architecture
@@ -116,6 +132,95 @@ The OKX Trading Webhook API employs a serverless architecture built on Cloudflar
    - Burst limit support
    - Retry-after header
    - Protection against brute force attacks
+
+## Logging and Operation Tracking
+
+### Logging System
+1. **Log Levels**
+   - ERROR: For errors and failures
+   - TRADE: For trade-specific operations
+   - INFO: For general information
+   - DEBUG: For debugging details
+   - TRACE: For operation tracking
+   - API: For API request details
+
+2. **Logging Patterns**
+   - Structured JSON format for machine readability
+   - Consistent field naming
+   - Error context inclusion
+   - Request ID correlation
+   - Operation ID linking
+
+3. **Implementation**
+   ```javascript
+   const LOG_LEVEL = {
+     ERROR: 'ERROR',
+     INFO: 'INFO', 
+     DEBUG: 'DEBUG',
+     TRADE: 'TRADE',
+     TRACE: 'TRACE',
+     API: 'API'
+   };
+
+   function createLog(level, message, requestId, apiKey = '', env = null) {
+     // Structured logging implementation
+   }
+   ```
+
+### Operation Tracking
+1. **Core Functions**
+   ```javascript
+   function startOperation(type, details, requestId, parentOpId = null) {
+     const operationId = generateId();
+     return {
+       operationType: type,
+       operationId,
+       parentOpId,
+       startTime: Date.now(),
+       details
+     };
+   }
+
+   function endOperation(opContext, result, requestId) {
+     const duration = Date.now() - opContext.startTime;
+     createLog('TRACE', {
+       operation: opContext.operationType,
+       status: result.status || (result.success ? 'success' : 'failed'),
+       duration,
+       details: result.details || result,
+       opId: opContext.operationId,
+       parentOpId: opContext.parentOpId
+     }, requestId);
+   }
+   ```
+
+2. **Key Features**
+   - Unique operation IDs for tracking
+   - Parent-child relationships between operations
+   - Duration tracking for performance analysis
+   - Detailed operation context
+   - Consistent success/failure status
+
+3. **Usage Pattern**
+   ```javascript
+   async function someFunction(params, requestId, parentOpId = null) {
+     const opContext = startOperation('OperationType', {
+       // Operation details
+     }, requestId, parentOpId);
+     
+     try {
+       // Function implementation
+       // Pass opContext.operationId to child operations
+       endOperation(opContext, { success: true }, requestId);
+     } catch (error) {
+       endOperation(opContext, { 
+         success: false, 
+         details: { error: error.message } 
+       }, requestId);
+       throw error;
+     }
+   }
+   ```
 
 ## Error Handling Strategy
 
@@ -181,13 +286,20 @@ A detailed system flow diagram has been created to document all components, func
 ### Order Placement
 - Generate OKX Request → Generate Signature → Sign Request → Handle Retry Logic
 
+### Operation Tracking Integration
+- Webhook Receipt (Parent Operation) → Trade Execution (Child Operation) → API Requests (Grandchild Operations)
+- Each operation tracks timing, success/failure, and details
+- Parent-child relationships maintain the execution context across the call stack
+
 ### Logging Integration
 - All components integrate with the central logging system
 - Security events, trade execution, API interactions, and errors are logged with appropriate severity levels
+- Operation tracking events logged at TRACE level with operation IDs for correlation
 
 ### Error Handling
 - Retry logic for transient errors
 - Comprehensive error logging
 - Standardized error responses
+- Error correlation through operation IDs
 
 This comprehensive flow documentation enhances understanding of the system architecture, making it easier to maintain and extend the codebase. It serves as a reference for developers working on the project and helps ensure that all components work together correctly.

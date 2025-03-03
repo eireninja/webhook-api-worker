@@ -2,10 +2,13 @@
 
 ## Current Work Focus
 
-The current focus is on ensuring robust security measures for the webhook API, specifically through implementing universal IP validation via middleware and eliminating security vulnerabilities. Secondary objectives include enhancing the visual presentation of Telegram notifications and extensive stress testing to validate system performance and scalability. These efforts build upon the recent security enhancements and system flow documentation.
+The current focus is on enhancing the logging system to improve operation tracking and debugging capabilities, along with ensuring robust security measures for the webhook API. The logging effort aims to establish consistent log levels, improve operation tracking with parent-child relationships, and provide comprehensive documentation. The security focus includes implementing universal IP validation via middleware and eliminating security vulnerabilities. Secondary objectives include enhancing the visual presentation of Telegram notifications and extensive stress testing to validate system performance and scalability.
 
 ## Recent Changes
 
+- **Operation Tracking System**: Implemented a comprehensive operation tracking framework with `startOperation` and `endOperation` functions that establish parent-child relationships between operations and track execution times.
+- **Enhanced Logging System**: Added a new `API` log level to the `LOG_LEVEL` constant and replaced all string literal references with the proper constant for consistent logging.
+- **Logging Documentation**: Created detailed documentation of the logging system with implementation examples, patterns, and next steps for future development.
 - **Critical Security Vulnerability Fix**: Removed duplicate route handler that bypassed IP validation and implemented universal middleware-based IP validation for all routes and HTTP methods to prevent unauthorized access.
 - **Universal IP Validation**: Implemented IP validation as a middleware that runs before any route handler, ensuring all requests regardless of path or method are validated against the TradingView IP whitelist.
 - **DryRun Functionality Fix**: Modified the `executeMultiAccountTrades` function to pass the dryRun flag from the payload to each order object, ensuring that trades are not executed during stress testing.
@@ -22,6 +25,8 @@ The current focus is on ensuring robust security measures for the webhook API, s
 
 ## Current Activities
 
+- Implementing operation tracking in core trading functions
+- Enhancing the logging system with consistent patterns and structured formats
 - Securing the webhook API through comprehensive middleware-based validation
 - Optimizing trading functionality to prevent leftover amounts after trades
 - Creating and maintaining comprehensive system documentation
@@ -42,15 +47,27 @@ The current focus is on ensuring robust security measures for the webhook API, s
 
 4. **Error Recovery**: Limited automated recovery from certain error conditions that may require manual intervention.
 
+5. **Incomplete Operation Tracking**: Operation tracking implementation is not yet complete across all functions, leading to gaps in the traceability chain.
+
 ### Planned Improvements
 
-1. **Fix Webpack Compatibility Issues**: Resolve the issues with async/await to ensure reliable operation.
+1. **Complete Operation Tracking Implementation**: 
+   - Extend operation tracking to position management functions
+   - Add operation tracking to order execution functions
+   - Implement operation tracking in webhook handlers
 
-2. **Re-implement PnL Calculation**: Re-enable the PnL calculation and display in Telegram notifications.
+2. **Add Performance Metrics**: 
+   - Add execution time tracking for critical operations
+   - Track API call latency
+   - Monitor resource usage for high-volume operations
 
-3. **Test Multi-Account Execution**: Ensure reliable operation when executing orders across multiple accounts.
+3. **Fix Webpack Compatibility Issues**: Resolve the issues with async/await to ensure reliable operation.
 
-4. **Additional Security Enhancements**: 
+4. **Re-implement PnL Calculation**: Re-enable the PnL calculation and display in Telegram notifications.
+
+5. **Test Multi-Account Execution**: Ensure reliable operation when executing orders across multiple accounts.
+
+6. **Additional Security Enhancements**: 
    - Implement HTTP security headers
    - Move IP whitelist to environment variables for easier management
    - Implement CIDR notation support for IP ranges
@@ -58,27 +75,33 @@ The current focus is on ensuring robust security measures for the webhook API, s
    - Enhance logging for security events
    - Review and update dependencies for security patches
 
-5. **Rate Limit Monitoring**: Monitor compliance with OKX API rate limits.
+7. **Rate Limit Monitoring**: Monitor compliance with OKX API rate limits.
 
 ## Next Steps
 
-1. Test the improved security implementation with various request types to ensure all routes are properly protected.
+1. Implement operation tracking in position management functions (getCurrentPosition, closePerpsPosition, closeInvPerpsPosition).
 
-2. Validate that the IP whitelist is working as expected by testing with both allowed and disallowed IPs.
+2. Add operation tracking to order execution functions (executeSpotTrade, executePerpsOrder, executeInvPerpsOrder).
 
-3. Test the optimized spot trading functionality with various scenarios to ensure it correctly handles all trade types without leaving dust.
+3. Update webhook handlers with operation tracking.
 
-4. Integrate the system flow diagram into the project documentation.
+4. Test the improved security implementation with various request types to ensure all routes are properly protected.
 
-5. Review other trading functions for similar optimization opportunities.
+5. Validate that the IP whitelist is working as expected by testing with both allowed and disallowed IPs.
 
-6. Fix webpack async/await compatibility issue.
+6. Test the optimized spot trading functionality with various scenarios to ensure it correctly handles all trade types without leaving dust.
 
-7. Verify error handling across all accounts.
+7. Integrate the system flow diagram into the project documentation.
 
-8. Monitor rate limiting effectiveness.
+8. Review other trading functions for similar optimization opportunities.
 
-9. Re-implement PnL calculation and display.
+9. Fix webpack async/await compatibility issue.
+
+10. Verify error handling across all accounts.
+
+11. Monitor rate limiting effectiveness.
+
+12. Re-implement PnL calculation and display.
 
 ## Current Questions and Clarifications Needed
 
@@ -95,3 +118,9 @@ The current focus is on ensuring robust security measures for the webhook API, s
 6. What additional security measures could be implemented to further protect the webhook API?
 
 7. Are there any performance implications of the added IP validation middleware?
+
+8. What are the current patterns for error handling, and how can they be improved with operation tracking?
+
+9. How should we prioritize the remaining operation tracking implementation?
+
+10. What metrics would be most useful for monitoring system performance and health?

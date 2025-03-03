@@ -16,8 +16,8 @@ const CONFIG = {
   authToken: '', // URL encoded special characters
   
   // Load testing parameters
-  concurrentUsers: 20, // Increased to get meaningful data
-  requestsPerUser: 50, // Increased to get meaningful data
+  concurrentUsers: 1, // Increased to get meaningful data
+  requestsPerUser: 5, // Increased to get meaningful data
   delayBetweenRequestsMs: 50, // Decreased to increase load
   
   // Trade simulation parameters

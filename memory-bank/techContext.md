@@ -17,10 +17,6 @@
 - **k6**: Open-source load testing tool used for stress testing the API
 - **autocannon**: Node.js-based HTTP benchmarking tool for performance testing
 
-### External Services
-- **OKX Trading API**: Exchange API for executing trades and retrieving market data
-- **Telegram API**: For sending notifications about trade execution and errors
-
 ## Development Setup
 
 ### Local Development
@@ -52,6 +48,45 @@
 - Execution time: Maximum of 30ms CPU time in free tier (50ms in paid)
 - Memory: Limited to 128MB
 - Environment variables: Maximum size and number restrictions
+
+## Operation Tracking & Logging System
+
+### Core Components
+1. **Log Levels**:
+   ```javascript
+   const LOG_LEVEL = {
+     ERROR: 'ERROR',
+     INFO: 'INFO', 
+     DEBUG: 'DEBUG',
+     TRADE: 'TRADE',
+     TRACE: 'TRACE',
+     API: 'API'
+   };
+   ```
+
+2. **Operation Tracking Functions**:
+   - `startOperation`: Creates operation context with unique ID and timing
+   - `endOperation`: Finalizes operation with timing and status
+   - Operations support parent-child relationships for traceability
+
+3. **Structured Logging**:
+   - `createLog`: Core logging function with consistent formatting
+   - Supports masking of sensitive information
+   - Correlation through request IDs and operation IDs
+
+### Implementation Details
+- All operations start with a unique operation ID
+- Child operations receive parent operation IDs
+- Operations track execution time automatically
+- All logging follows consistent JSON structure
+- Security events logged with appropriate severity
+
+### Diagnostic Capabilities
+- Trace request flow through the entire system
+- Identify performance bottlenecks
+- Correlate related operations
+- Track API request success/failure
+- Monitor execution times
 
 ## Dependencies
 
