@@ -210,37 +210,65 @@ function getTimestamp() {
  * @returns {string} Generated signature
  */
 async function sign(timestamp, method, requestPath, body, secretKey, requestId) {
-  // Handle empty body same as Python
-  const processedBody = body === '{}' || !body ? '' : body;
-  
-  // Create message string
-  const message = `${timestamp}${method}${requestPath}${processedBody}`;
-  createLog('AUTH', `Signature components:\n    Message: ${message}`, requestId);
-  
-  // Convert message and key to Uint8Array
-  const msgData = new TextEncoder().encode(message);
-  const keyData = new TextEncoder().encode(secretKey);
-  
-  // Generate HMAC
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  
-  const signature = await crypto.subtle.sign(
-    'HMAC',
-    key,
-    msgData
-  );
-  
-  // Convert to base64
-  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  createLog('AUTH', `      Signature: ${mask(signatureBase64)}`, requestId);
-  
-  return signatureBase64;
+  try {
+    // Handle empty body same as Python
+    const processedBody = body === '{}' || !body ? '' : body;
+    
+    // Create message string
+    const message = `${timestamp}${method}${requestPath}${processedBody}`;
+    
+    // Convert message and key to Uint8Array
+    const msgData = new TextEncoder().encode(message);
+    const keyData = new TextEncoder().encode(secretKey);
+    
+    // Generate HMAC
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    
+    const signature = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      msgData
+    );
+    
+    // Convert to base64
+    const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+    
+    // Create a single structured log with all signature information
+    createLog('AUTH', {
+      operation: 'Signature Generation',
+      status: 'success',
+      details: {
+        signature: mask(signatureBase64),
+        message: message,
+        timestamp: timestamp,
+        method: method,
+        path: requestPath
+      }
+    }, requestId);
+    
+    return signatureBase64;
+  } catch (error) {
+    // Log signature generation error
+    createLog('ERROR', {
+      operation: 'Signature Generation',
+      status: 'failed',
+      details: {
+        error: error.message,
+        timestamp: timestamp,
+        method: method,
+        path: requestPath
+      }
+    }, requestId);
+    
+    // Re-throw to allow error handling in calling functions
+    throw new Error(`Signature generation failed: ${error.message}`);
+  }
 }
 
 /**
@@ -528,15 +556,7 @@ async function generateOkxRequest(method, path, body, credentials, requestId = '
     'OK-ACCESS-PASSPHRASE': credentials.passphrase
   };
 
-  // Use logGroup to create a structured log for the authentication details
-  logGroup('AUTH', 'API Request Authentication', [
-    `Method: ${method.toUpperCase()}`,
-    `Endpoint: ${path}`,
-    `API Key: ${mask(credentials.apiKey)}`,
-    `Timestamp: ${timestamp}`,
-    `Signature: ${mask(signature)}`,
-    `Payload: ${body ? mask(body) : 'empty'}`
-  ], requestId);
+  // No need to duplicate logging here as the sign function now provides comprehensive logs
   
   return { headers, timestamp };
 }
