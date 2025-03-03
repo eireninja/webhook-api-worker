@@ -186,15 +186,16 @@ function getTimestamp() {
  * @param {string} requestPath - API endpoint path
  * @param {string} body - Request body
  * @param {string} secretKey - API secret key
+ * @param {string} requestId - Request identifier
  * @returns {string} Generated signature
  */
-async function sign(timestamp, method, requestPath, body, secretKey) {
+async function sign(timestamp, method, requestPath, body, secretKey, requestId) {
   // Handle empty body same as Python
   const processedBody = body === '{}' || !body ? '' : body;
   
   // Create message string
   const message = `${timestamp}${method}${requestPath}${processedBody}`;
-  createLog('AUTH', `Signature components:\n    Message: ${message}`);
+  createLog('AUTH', `Signature components:\n    Message: ${message}`, requestId);
   
   // Convert message and key to Uint8Array
   const msgData = new TextEncoder().encode(message);
@@ -217,7 +218,7 @@ async function sign(timestamp, method, requestPath, body, secretKey) {
   
   // Convert to base64
   const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  createLog('AUTH', `      Signature: ${mask(signatureBase64)}`);
+  createLog('AUTH', `      Signature: ${mask(signatureBase64)}`, requestId);
   
   return signatureBase64;
 }
@@ -227,14 +228,15 @@ async function sign(timestamp, method, requestPath, body, secretKey) {
  * @param {string} strategyId - Strategy identifier
  * @param {string} brokerTag - Broker identification tag
  * @param {string} [batchIndex=''] - Optional batch index for batch orders
+ * @param {string} [requestId='unknown'] - Request identifier
  * @returns {string} Generated client order ID
  */
-function generateClOrdId(strategyId, brokerTag, batchIndex = '') {
+function generateClOrdId(strategyId, brokerTag, batchIndex = '', requestId = 'unknown') {
   const timestamp = Date.now().toString().slice(-6); // Use last 6 digits of timestamp
   const sanitizedStrategy = (strategyId || 'default')
     .replace(/[^a-zA-Z0-9]/g, '')
     .substring(0, 6); // Shorter strategy ID
-  createLog('TRADE', 'Generating clOrdId');
+  createLog('TRADE', 'Generating clOrdId', requestId);
   // Ensure total length is under 32 chars
   return `${brokerTag}${sanitizedStrategy}${timestamp}${batchIndex}`.substring(0, 32);
 }
@@ -404,7 +406,7 @@ async function makeOkxApiRequest(method, path, body, credentials, requestId, opt
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const { headers } = await generateOkxRequest(method, path, body, credentials);
+      const { headers } = await generateOkxRequest(method, path, body, credentials, requestId);
       
       const requestOptions = {
         method,
@@ -474,19 +476,20 @@ async function makeOkxApiRequest(method, path, body, credentials, requestId, opt
  * Generates common OKX request headers and signature
  * @param {string} method - HTTP method
  * @param {string} path - API endpoint path
- * @param {Object} body - Request body
+ * @param {string} body - Request body
  * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
  * @returns {Object} Headers and signed request body
  */
-async function generateOkxRequest(method, path, body, credentials) {
+async function generateOkxRequest(method, path, body, credentials, requestId = 'unknown') {
   const timestamp = new Date().toISOString().split('.')[0] + 'Z';
-  createLog('AUTH', `Generating request with API key: ${mask(credentials.apiKey)}`);
+  createLog('AUTH', `Generating request with API key: ${mask(credentials.apiKey)}`, requestId);
   
   // Always include /api/v5 in signature path
   const signaturePath = path.startsWith('/api/v5') ? path : `/api/v5${path}`;
   
   // Generate signature using stringified body
-  const signature = await sign(timestamp, method.toUpperCase(), signaturePath, body, credentials.secretKey);
+  const signature = await sign(timestamp, method.toUpperCase(), signaturePath, body, credentials.secretKey, requestId);
   
   // Order headers exactly as in Python implementation
   const headers = {
@@ -503,7 +506,7 @@ async function generateOkxRequest(method, path, body, credentials) {
     Timestamp: timestamp,
     ...JSON.parse(body || '{}')
   });
-  createLog('AUTH', authLog);
+  createLog('AUTH', authLog, requestId);
   
   return { headers, timestamp };
 }
@@ -532,7 +535,7 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
   try {
     // Different endpoint for perpetual futures
     if (instId.endsWith('-SWAP')) {
-      createLog('TRADE', 'Getting futures max size');
+      createLog('TRADE', 'Getting futures max size', requestId);
       const path = '/api/v5/account/max-size';
       
       // Build query parameters based on margin mode
@@ -551,10 +554,11 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
         'GET',
         path + queryParams,
         '',
-        credentials
+        credentials,
+        requestId
       );
 
-      createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+      createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`, requestId);
       const response = await fetch(`https://www.okx.com${path}${queryParams}`, { headers });
       const data = await response.json();
       
@@ -603,10 +607,11 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
       'GET',
       path + queryParams,
       '',
-      credentials
+      credentials,
+      requestId
     );
 
-    createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`);
+    createLog('API', `Making request to: https://www.okx.com${path}${queryParams}`, requestId);
     const response = await fetch(`https://www.okx.com${path}${queryParams}`, {
       method: 'GET',
       headers
@@ -625,7 +630,7 @@ async function getMaxAvailSize(instId, credentials, requestId, payload) {
     
     return result;
   } catch (error) {
-    createLog('API', `Failed to get max size: ${error.message}`);
+    createLog('API', `Failed to get max size: ${error.message}`, requestId);
     throw new Error(`Failed to get max size: ${error.message}`);
   }
 }
@@ -643,11 +648,12 @@ async function getAccountBalance(credentials, requestId) {
       'GET',
       path,
       '',
-      credentials
+      credentials,
+      requestId
     );
 
-    createLog('API', `Making request to: https://www.okx.com${path}`);
-    createLog('API', `Headers: ${JSON.stringify(headers, null, 2)}`);
+    createLog('API', `Making request to: https://www.okx.com${path}`, requestId);
+    createLog('API', `Headers: ${JSON.stringify(headers, null, 2)}`, requestId);
 
     const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
@@ -655,7 +661,7 @@ async function getAccountBalance(credentials, requestId) {
     });
 
     const text = await response.text();
-    createLog('API', `Response: ${text}`);
+    createLog('API', `Response: ${text}`, requestId);
 
     const data = JSON.parse(text);
     if (!response.ok || data.code === '1') {
@@ -664,7 +670,7 @@ async function getAccountBalance(credentials, requestId) {
 
     return data.data[0];
   } catch (error) {
-    createLog('API', `Failed to get account balance: ${error.message}`);
+    createLog('API', `Failed to get account balance: ${error.message}`, requestId);
     throw error;
   }
 }
@@ -673,10 +679,11 @@ async function getAccountBalance(credentials, requestId) {
  * Gets instrument information
  * @param {string} instId - Instrument ID
  * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
  * @returns {Promise<Object>} Instrument details
  */
 async function getInstrumentInfo(instId, credentials, requestId) {
-  createLog('TRADE', 'Getting instrument info');
+  createLog('TRADE', 'Getting instrument info', requestId);
   const path = '/api/v5/public/instruments';
   const queryParams = `?instType=${instId.includes('-SWAP') ? 'SWAP' : 'SPOT'}&instId=${instId}`;
   
@@ -698,19 +705,21 @@ async function getInstrumentInfo(instId, credentials, requestId) {
  * Gets current position information
  * @param {string} instId - Instrument ID
  * @param {Object} credentials - API credentials
+ * @param {string} requestId - Request identifier
  * @returns {Promise<Object>} Position details
  */
-async function getCurrentPosition(instId, credentials) {
+async function getCurrentPosition(instId, credentials, requestId) {
   try {
     const path = '/api/v5/account/positions';
     const { headers } = await generateOkxRequest(
       'GET',
       path,
       '',
-      credentials
+      credentials,
+      requestId
     );
 
-    createLog('API', `Making request to: https://www.okx.com${path}`);
+    createLog('API', `Making request to: https://www.okx.com${path}`, requestId);
     const response = await fetch(`https://www.okx.com${path}`, {
       method: 'GET',
       headers
@@ -727,10 +736,10 @@ async function getCurrentPosition(instId, credentials) {
       throw new Error(`No position found for ${instId}`);
     }
 
-    createLog('TRADE', `Current position: ${JSON.stringify(position)}`);
+    createLog('TRADE', `Current position: ${JSON.stringify(position)}`, requestId);
     return position;
   } catch (error) {
-    createLog('API', `Failed to get position: ${error.message}`);
+    createLog('API', `Failed to get position: ${error.message}`, requestId);
     throw error;
   }
 }
@@ -745,7 +754,7 @@ async function getCurrentPosition(instId, credentials) {
  * @returns {Promise<Object>} Maximum size information
  */
 async function fetchMaxSize(instId, tdMode, posSide, credentials, requestId) {
-  createLog('TRADE', 'Getting max size');
+  createLog('TRADE', 'Getting max size', requestId);
   const path = '/api/v5/account/max-size';
   let queryParams = `?instId=${instId}&tdMode=${tdMode}`;
   
@@ -842,7 +851,7 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
     
     // Get instrument info for the symbol
     createLog('TRADE', `Getting instrument info for ${instId}`, requestId);
-    const instInfo = await getInstrumentInfo(instId, credentials);
+    const instInfo = await getInstrumentInfo(instId, credentials, requestId);
     if (!instInfo || !instInfo.lotSz) {
       createLog('TRADE', `Failed to get instrument info for ${instId}`, requestId);
       return { successful: 0, failed: 1, sz: 0 };
@@ -877,7 +886,7 @@ async function executeSpotTrade(payload, credentials, brokerTag, requestId, env,
       tdMode: 'cash',
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag, '', requestId),
       side: payload.side.toLowerCase(),
       sz: orderSize,
       tgtCcy: isBuy ? 'base_ccy' : 'quote_ccy'  // base_ccy for buys, quote_ccy for sells
@@ -981,7 +990,7 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
     
     // Get instrument info for lot size
     createLog('TRADE', `Getting instrument info for ${instId}`, requestId);
-    const instInfo = await getInstrumentInfo(instId, credentials);
+    const instInfo = await getInstrumentInfo(instId, credentials, requestId);
     
     if (!instInfo || !instInfo.lotSz) {
       throw new Error(`Failed to get lot size for ${instId}`);
@@ -1020,7 +1029,7 @@ async function openPerpsPosition(payload, credentials, brokerTag, requestId, env
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag, '', requestId),
       posSide: posSide,
       side: payload.side.toLowerCase(),
       sz: orderSize
@@ -1080,7 +1089,7 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
     
     // Get current position details
     createLog('TRADE', `Getting current position for ${instId}`, requestId);
-    const position = await getCurrentPosition(instId, credentials);
+    const position = await getCurrentPosition(instId, credentials, requestId);
     if (!position || !position.pos) {
       // No position to close is a success case (idempotency)
       return { successful: 1, failed: 0, sz: 0 };
@@ -1104,7 +1113,7 @@ async function closePerpsPosition(payload, credentials, brokerTag, requestId, en
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag, '', requestId),
       posSide: position.posSide,
       side: side,
       sz: orderSize,
@@ -1191,7 +1200,7 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
     const instId = formatTradingPair(payload.symbol, 'invperps');
     
     // Get instrument info for lot size first
-    const instInfo = await getInstrumentInfo(instId, credentials);
+    const instInfo = await getInstrumentInfo(instId, credentials, requestId);
     if (!instInfo || !instInfo.lotSz) {
       createLog('TRADE', `Failed to get instrument info for ${instId}`, requestId);
       return { successful: 0, failed: 1, sz: 0 };
@@ -1244,7 +1253,7 @@ async function openInvPerpsPosition(payload, credentials, brokerTag, requestId, 
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag, '', requestId),
       posSide: posSide,
       side: payload.side.toLowerCase(),
       sz: orderSize
@@ -1301,7 +1310,7 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
     
     // Get current position details
     createLog('TRADE', `Getting current position for ${instId}`, requestId);
-    const position = await getCurrentPosition(instId, credentials);
+    const position = await getCurrentPosition(instId, credentials, requestId);
     if (!position || !position.pos) {
       throw new Error('No position found to close');
     }
@@ -1320,7 +1329,7 @@ async function closeInvPerpsPosition(payload, credentials, brokerTag, requestId,
       tdMode: payload.marginMode,
       ordType: 'market',
       tag: brokerTag,
-      clOrdId: generateClOrdId(payload.strategyId, brokerTag),
+      clOrdId: generateClOrdId(payload.strategyId, brokerTag, '', requestId),
       posSide: position.posSide,
       side: side,
       sz: orderSize,
@@ -1450,7 +1459,8 @@ async function setLeverage(data, credentials, requestId, env) {
     'POST',
     path,
     body,
-    credentials
+    credentials,
+    requestId
   );
 
   const response = await fetch(`${OKX_API_URL}${path}`, {
@@ -1928,26 +1938,95 @@ function formatTradeLogMessage(type, action, details, position = null) {
  * @param {string} requestId - Request identifier
  * @param {string} [apiKey] - Optional API key
  * @param {Object} [env] - Environment variables
+ * @returns {Object} The log object that was created
  */
-async function createLog(level, message, requestId, apiKey = '', env = null) {
-  try {
-    const timestamp = new Date().toISOString()
-      .slice(0, 19)
-      .replace('T', '..')
-      .replace(/-/g, '.');
-    
-    const reqIdStr = requestId ? `[ReqID=${requestId.slice(0, 8)}...]` : '';
-    const accountStr = apiKey ? `[Account=${apiKey.slice(0, 4)}...]` : '';
-    
-    // Format multi-line messages with proper indentation
-    const formattedMessage = (message || '').toString().split('\n')
-      .map((line, i) => i === 0 ? line : '  ' + line)
-      .join('\n');
-
-    console.log(`[${timestamp}][${level}]${reqIdStr}${accountStr} ${formattedMessage}`);
-  } catch (error) {
-    console.error(`Logging error: ${error.message}`);
+function createLog(level, message, requestId, apiKey = '', env = null) {
+  const shortRequestId = requestId ? requestId.substring(0, 8) : '--------';
+  
+  // Add transaction path for easier tracing
+  let transactionPath = '';
+  
+  // Extract transaction path from context if available
+  if (message.includes('Getting instrument info')) {
+    transactionPath = 'FETCH_INSTRUMENT';
+  } else if (message.includes('Getting max size')) {
+    transactionPath = 'FETCH_MAX_SIZE';
+  } else if (message.includes('Generating request')) {
+    transactionPath = 'AUTH_REQUEST';
+  } else if (message.includes('Order') && !message.includes('successful')) {
+    transactionPath = 'ORDER_PROCESS';
+  } else if (message.includes('executed successfully')) {
+    transactionPath = 'ORDER_SUCCESS';
+  } else if (message.includes('failed')) {
+    transactionPath = 'ORDER_FAILURE';
+  } else if (message.includes('validation')) {
+    transactionPath = 'VALIDATION';
+  } else if (message.includes('Received')) {
+    transactionPath = 'REQUEST_RECEIVED';
   }
+  
+  // Add API key context if available
+  let apiContext = '';
+  if (apiKey) {
+    apiContext = `[${apiKey.substring(0, 4)}...]`;
+  }
+  
+  const pathInfo = transactionPath ? `[${transactionPath}]` : '';
+  const formattedMessage = `[${level}][${shortRequestId}]${pathInfo}${apiContext} ${message}`;
+  
+  // Create structured log object
+  const logObject = {
+    timestamp: new Date().toISOString(),
+    level,
+    message: formattedMessage,
+    requestId: requestId || 'unknown',
+    context: {}
+  };
+  
+  // Add API key if provided (with masking)
+  if (apiKey) {
+    logObject.context.apiKey = mask(apiKey);
+  }
+  
+  // Add environment-specific fields if available
+  if (env) {
+    if (env.BROKER_TAG_OKX) {
+      logObject.context.brokerTag = env.BROKER_TAG_OKX;
+    }
+    
+    // Try to extract request info if available in current execution context
+    try {
+      if (env.executionCtx && env.executionCtx.request) {
+        const request = env.executionCtx.request;
+        logObject.context.ip = request.headers.get('cf-connecting-ip');
+        logObject.context.userAgent = request.headers.get('user-agent');
+        logObject.context.url = request.url;
+        logObject.context.method = request.method;
+      }
+    } catch (e) {
+      // Silently continue if we can't access execution context
+    }
+  }
+  
+  // For error logs, try to extract stack trace if available
+  if (level === 'ERROR' && message instanceof Error) {
+    logObject.context.errorName = message.name;
+    logObject.message = `[${level}][${shortRequestId}]${pathInfo} ${message.message}`;
+    logObject.context.stack = message.stack;
+  }
+  
+  // Output as JSON string
+  const logString = JSON.stringify(logObject);
+  
+  // Use appropriate console method based on level
+  if (level === 'ERROR') {
+    console.error(logString);
+  } else {
+    console.log(logString);
+  }
+  
+  // Return the object for potential further processing
+  return logObject;
 }
 
 /**

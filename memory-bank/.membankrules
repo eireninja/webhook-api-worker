@@ -1,23 +1,74 @@
 # Memory Bank Rules for OKX Trading Webhook API Project
 
-## File Structure
-- Keep all Memory Bank files in the memory-bank/ directory
-- Maintain journal entries in memory-bank/journal/ directory
-- Use ISO date format (YYYY_MM_DD) for journal entry filenames
-- Include descriptive suffixes for journal entries (e.g., 2025_02_28_feature_implementation.md)
+## File Structure and Hierarchy
+- All Memory Bank files must be maintained in the memory-bank/ directory
+- Core files follow a clear hierarchy:
+  ```
+  projectbrief.md → productContext.md, systemPatterns.md, techContext.md
+  productContext.md, systemPatterns.md, techContext.md → activeContext.md
+  journal/* → activeContext.md
+  activeContext.md → progress.md
+  ```
+- Journal entries must be stored in memory-bank/journal/ directory with ISO date format (YYYY_MM_DD_descriptive_name.md)
 
-## Content Guidelines
-- Keep documentation concise and focused
-- Update activeContext.md as work focus changes
-- Record all significant code changes in journal entries
-- Update progress.md when features are completed or issues are resolved
-- Document known issues and their current status
+## Core Workflows
 
-## Maintenance Schedule
-- Create a new journal entry for each major coding session
-- Update activeContext.md at the start of each new task
-- Review and update progress.md weekly or after major milestones
-- Revisit projectbrief.md if project scope changes
+### Chat Mode Workflow
+1. Read all Memory Bank files thoroughly at the start of every task
+2. Verify file completeness and current context
+3. Review journal history for recent changes
+4. Check relevant persistent memories for patterns
+5. Develop strategy based on complete context
+6. Present approach to user
+
+### Write Mode Workflow
+1. Check Memory Bank files and persistent memories
+2. Update documentation to reflect current state
+3. Update .membankrules if needed
+4. Reset API call count for tracking
+5. Execute requested task
+6. Update journal with changes
+7. Validate progress every 15-20 API calls
+8. Reassess if implementation deviates from plan
+
+## Documentation Update Guidelines
+- Update Memory Bank when:
+  - Discovering new project patterns
+  - Implementing significant changes
+  - User requests with "update memory bank" (MUST review ALL files)
+  - Context needs clarification
+  - New dependencies are added
+  - Architecture is modified
+  - Significant refactoring occurs
+
+## Project Intelligence and Learning
+- Identify patterns from journal entries, persistent memories, code analysis, and user interaction
+- Validate patterns with user feedback
+- Document proven patterns in persistent memories
+- Apply established patterns to improve future work
+- Ensure consistent application of security practices
+
+## Memory Creation Guidelines
+
+### Create Memories For
+- Project-wide insights and architecture decisions
+- Critical patterns and reusable solutions
+- Important user preferences and conventions
+- Significant challenges and their resolutions
+- Cross-project learnings and patterns
+
+### Avoid Creating Memories For
+- Routine file updates
+- Temporary states
+- Duplicate information
+- Low-impact changes
+
+## Interoperability with Other Code Assistants
+- Memory bank files must be complete and standalone
+- All context must exist within the file system
+- No references to persistent memories in shared files
+- Use universal markdown formatting
+- Write documentation as if another coding assistant will read it next
 
 ## Documentation Practices
 - Use markdown formatting consistently
@@ -25,12 +76,34 @@
 - Document both implementation details and design decisions
 - Update dependencies in techContext.md when they change
 - Document API changes thoroughly
+- Focus on clarity and completeness
 
-## Update Criteria
-- Update Memory Bank when:
-  - New features are implemented
-  - Bugs are fixed
-  - Project direction changes
-  - New dependencies are added
-  - Architecture is modified
-  - Significant refactoring occurs
+## OKX Trading Webhook API Specific Rules
+
+### Security Documentation
+- Document all security measures in detail
+- Update security audit findings when changes are made
+- Maintain comprehensive documentation of the multi-layered security approach
+- Document any changes to IP whitelist or authentication mechanisms
+
+### Performance Tracking
+- Record stress test results and performance metrics
+- Document any optimizations and their impact
+- Track compliance with OKX API rate limits
+
+### API Compatibility
+- Document adherence to OKX API specifications
+- Note any version changes or deprecation plans
+- Track API response patterns and error handling
+
+### Notification Systems
+- Document Telegram notification format changes
+- Track notification delivery reliability
+- Document message format enhancements
+
+## Maintenance Schedule
+- Create a new journal entry for each major coding session
+- Update activeContext.md at the start of each new task
+- Review and update progress.md weekly or after major milestones
+- Revisit projectbrief.md if project scope changes
+- Validate security measures after any infrastructure changes
