@@ -145,10 +145,11 @@ function validateBrokerTag(tag) {
  * Validates authentication token from the request
  * @param {Object} payload - Request payload containing the token
  * @param {Object} env - Environment variables containing auth settings
+ * @param {string} requestId - Request identifier
  * @throws {Error} If token is invalid or missing
  * @returns {boolean} True if token is valid
  */
-function validateAuthToken(payload, env) {
+function validateAuthToken(payload, env, requestId = 'unknown') {
   if (!env?.WEBHOOK_AUTH_TOKEN) {
     throw new Error('Server configuration error: missing authentication token');
   }
@@ -161,7 +162,7 @@ function validateAuthToken(payload, env) {
       details: {
         reason: 'Missing token'
       }
-    }, 'unknown');
+    }, requestId);
     throw new Error('Missing authentication token');
   }
 
@@ -173,7 +174,7 @@ function validateAuthToken(payload, env) {
       details: {
         reason: 'Invalid token'
       }
-    }, 'unknown');
+    }, requestId);
     throw new Error('Invalid authentication token');
   }
   
@@ -181,7 +182,7 @@ function validateAuthToken(payload, env) {
   createLog('AUTH', {
     operation: 'Authentication',
     status: 'success'
-  }, 'unknown');
+  }, requestId);
 }
 
 //=============================================================================
@@ -1809,6 +1810,7 @@ async function executeMultiAccountTrades(payload, apiKeys, brokerTag, requestId,
     for (const orderObj of allOrders) {
       try {
         const result = await placeOrder(orderObj.order, orderObj.credentials, requestId, env);
+        
         if (result.successful) {
           totalSuccessful++;
           totalSize += parseFloat(orderObj.order.sz || 0);
@@ -2326,7 +2328,12 @@ function logGroup(level, groupTitle, messages, requestId = 'unknown', apiKey = '
 
 // IP validation middleware - MUST BE FIRST!
 router.all('*', async (request, env) => {
+  // Generate a request ID and store it in the request object for later handlers
   const requestId = crypto.randomUUID();
+  // Store in a custom property for downstream handlers
+  request.ctx = request.ctx || {};
+  request.ctx.requestId = requestId;
+  
   const clientIp = request.headers.get('cf-connecting-ip');
   
   // Log the incoming request
@@ -2392,18 +2399,9 @@ router.all('*', async (request, env) => {
  * @returns {Response} Webhook processing response
  */
 router.post('/', async (request, env) => {
-  const requestId = crypto.randomUUID();
-  const clientIp = request.headers.get('cf-connecting-ip');
+  // Use the requestId from the middleware
+  const requestId = request.ctx?.requestId || crypto.randomUUID();
   
-  await createLog(LOG_LEVEL.INFO, {
-    operation: 'Webhook request',
-    status: 'received',
-    details: {
-      clientIp,
-      userAgent: request.headers.get('user-agent') || 'unknown'
-    }
-  }, requestId, null, env);
-    
   try {
     const payload = await request.json();
     await createLog(LOG_LEVEL.INFO, {
@@ -2413,11 +2411,11 @@ router.post('/', async (request, env) => {
     }, requestId, null, env);
     
     // Token validation as the second step
-    validateAuthToken(payload, env);
+    validateAuthToken(payload, env, requestId);
 
     // Validate payload
     validatePayload(payload);
-
+    
     // Get API keys from database
     const apiKeys = await getApiKeys(env, requestId, payload.exchange);
     await createLog(LOG_LEVEL.INFO, {
